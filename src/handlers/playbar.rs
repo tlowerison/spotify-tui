@@ -4,7 +4,8 @@ use super::{
 };
 use crate::event::Key;
 use crate::network::IoEvent;
-use rspotify::model::{context::CurrentlyPlaybackContext, PlayingItem};
+use anyhow::anyhow;
+use rspotify::model::{context::CurrentPlaybackContext, PlayableItem};
 
 pub fn handler(key: Key, app: &mut App) {
     match key {
@@ -12,18 +13,18 @@ pub fn handler(key: Key, app: &mut App) {
             app.set_current_route_state(Some(ActiveBlock::Empty), Some(ActiveBlock::MyPlaylists));
         }
         Key::Char('s') => {
-            if let Some(CurrentlyPlaybackContext {
+            if let Some(CurrentPlaybackContext {
                 item: Some(item), ..
             }) = app.current_playback_context.to_owned()
             {
                 match item {
-                    PlayingItem::Track(track) => {
+                    PlayableItem::Track(track) => {
                         if let Some(track_id) = track.id {
-                            app.dispatch(IoEvent::ToggleSaveTrack(track_id));
+                            app.dispatch(IoEvent::ToggleSaveTrack { track_id });
                         }
                     }
-                    PlayingItem::Episode(episode) => {
-                        app.dispatch(IoEvent::ToggleSaveTrack(episode.id));
+                    PlayableItem::Episode(episode) => {
+                        app.handle_error(anyhow!("cannot save episodes right now"));
                     }
                 };
             };

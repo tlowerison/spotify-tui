@@ -1,3 +1,5 @@
+use rspotify::prelude::PlayableId;
+
 use super::{
     super::app::{App, EpisodeTableContext},
     common_key_events,
@@ -70,16 +72,16 @@ fn jump_to_end(app: &mut App) {
 
 fn on_enter(app: &mut App) {
     if let Some(episodes) = app.library.show_episodes.get_results(None) {
-        let episode_uris = episodes
+        let playable_ids = episodes
             .items
             .iter()
-            .map(|episode| episode.uri.to_owned())
-            .collect::<Vec<String>>();
-        app.dispatch(IoEvent::StartPlayback(
-            None,
-            Some(episode_uris),
-            Some(app.episode_list_index),
-        ));
+            .map(|episode| episode.id)
+            .map(PlayableId::Episode)
+            .collect::<Vec<_>>();
+        app.dispatch(IoEvent::StartPlayablesPlayback {
+            playable_ids,
+            offset: Some(app.episode_list_index as u32),
+        });
     }
 }
 

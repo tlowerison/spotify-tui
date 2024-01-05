@@ -56,20 +56,20 @@ pub fn handler(key: Key, app: &mut App) {
         Key::Enter => match app.album_table_context {
             AlbumTableContext::Full => {
                 if let Some(selected_album) = app.selected_album_full.clone() {
-                    app.dispatch(IoEvent::StartPlayback(
-                        Some(selected_album.album.uri),
-                        None,
-                        Some(app.saved_album_tracks_index),
-                    ));
+                    app.dispatch(IoEvent::StartContextPlayback {
+                        play_context_id: selected_album.album.id.into(),
+                        offset: Some(app.saved_album_tracks_index as u32),
+                    });
                 };
             }
             AlbumTableContext::Simplified => {
                 if let Some(selected_album_simplified) = &app.selected_album_simplified.clone() {
-                    app.dispatch(IoEvent::StartPlayback(
-                        selected_album_simplified.album.uri.clone(),
-                        None,
-                        Some(selected_album_simplified.selected_index),
-                    ));
+                    if let Some(album_id) = selected_album_simplified.album.id {
+                        app.dispatch(IoEvent::StartContextPlayback {
+                            play_context_id: album_id.into(),
+                            offset: Some(selected_album_simplified.selected_index as u32),
+                        });
+                    }
                 };
             }
         },
@@ -80,24 +80,30 @@ pub fn handler(key: Key, app: &mut App) {
         _ if key == app.user_config.keys.add_item_to_queue => match app.album_table_context {
             AlbumTableContext::Full => {
                 if let Some(selected_album) = app.selected_album_full.clone() {
-                    if let Some(track) = selected_album
+                    if let Some(track_id) = selected_album
                         .album
                         .tracks
                         .items
                         .get(app.saved_album_tracks_index)
+                        .and_then(|track| track.id.as_ref())
                     {
-                        app.dispatch(IoEvent::AddItemToQueue(track.uri.clone()));
+                        app.dispatch(IoEvent::AddItemToQueue {
+                            playable_id: track_id.clone().into(),
+                        });
                     }
                 };
             }
             AlbumTableContext::Simplified => {
                 if let Some(selected_album_simplified) = &app.selected_album_simplified.clone() {
-                    if let Some(track) = selected_album_simplified
+                    if let Some(track_id) = selected_album_simplified
                         .tracks
                         .items
                         .get(selected_album_simplified.selected_index)
+                        .and_then(|track| track.id.as_ref())
                     {
-                        app.dispatch(IoEvent::AddItemToQueue(track.uri.clone()));
+                        app.dispatch(IoEvent::AddItemToQueue {
+                            playable_id: track_id.clone().into(),
+                        });
                     }
                 };
             }
@@ -175,7 +181,7 @@ fn handle_recommended_tracks(app: &mut App) {
                         if let Some(id) = &track.id {
                             app.recommendations_context = Some(RecommendationsContext::Song);
                             app.recommendations_seed = track.name.clone();
-                            app.get_recommendations_for_track_id(id.to_string());
+                            app.get_recommendations_for_track_id(id.clone());
                         }
                     }
                 }
@@ -191,7 +197,7 @@ fn handle_recommended_tracks(app: &mut App) {
                     if let Some(id) = &track.id {
                         app.recommendations_context = Some(RecommendationsContext::Song);
                         app.recommendations_seed = track.name.clone();
-                        app.get_recommendations_for_track_id(id.to_string());
+                        app.get_recommendations_for_track_id(id.clone());
                     }
                 }
             };
@@ -210,7 +216,9 @@ fn handle_save_event(app: &mut App) {
                     .get(app.saved_album_tracks_index)
                 {
                     if let Some(track_id) = &selected_track.id {
-                        app.dispatch(IoEvent::ToggleSaveTrack(track_id.to_string()));
+                        app.dispatch(IoEvent::ToggleSaveTrack {
+                            track_id: track_id.clone(),
+                        });
                     };
                 };
             };
@@ -223,7 +231,9 @@ fn handle_save_event(app: &mut App) {
                     .get(selected_album_simplified.selected_index)
                 {
                     if let Some(track_id) = &selected_track.id {
-                        app.dispatch(IoEvent::ToggleSaveTrack(track_id.to_string()));
+                        app.dispatch(IoEvent::ToggleSaveTrack {
+                            track_id: track_id.clone(),
+                        });
                     };
                 };
             };
@@ -235,14 +245,14 @@ fn handle_save_album_event(app: &mut App) {
     match app.album_table_context {
         AlbumTableContext::Full => {
             if let Some(selected_album) = app.selected_album_full.clone() {
-                let album_id = &selected_album.album.id;
-                app.dispatch(IoEvent::CurrentUserSavedAlbumAdd(album_id.to_string()));
+                let album_id = selected_album.album.id.clone();
+                app.dispatch(IoEvent::CurrentUserSavedAlbumAdd { album_id });
             };
         }
         AlbumTableContext::Simplified => {
             if let Some(selected_album_simplified) = app.selected_album_simplified.clone() {
                 if let Some(album_id) = selected_album_simplified.album.id {
-                    app.dispatch(IoEvent::CurrentUserSavedAlbumAdd(album_id));
+                    app.dispatch(IoEvent::CurrentUserSavedAlbumAdd { album_id });
                 };
             };
         }

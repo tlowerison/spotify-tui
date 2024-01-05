@@ -25,7 +25,7 @@ pub fn handler(key: Key, app: &mut App) {
             | ActiveBlock::MadeForYou
             | ActiveBlock::MyPlaylists
             | ActiveBlock::RecentlyPlayed
-            | ActiveBlock::TrackTable => {
+            | ActiveBlock::ItemTable => {
                 app.set_current_route_state(None, Some(ActiveBlock::PlayBar));
             }
             _ => {}
@@ -49,7 +49,7 @@ pub fn handler(key: Key, app: &mut App) {
             | ActiveBlock::Home
             | ActiveBlock::MadeForYou
             | ActiveBlock::RecentlyPlayed
-            | ActiveBlock::TrackTable => {
+            | ActiveBlock::ItemTable => {
                 app.set_current_route_state(None, Some(ActiveBlock::Library));
             }
             _ => {}
@@ -120,7 +120,7 @@ mod tests {
         let current_route = app.get_current_route();
         assert_eq!(current_route.hovered_block, ActiveBlock::Library);
 
-        app.set_current_route_state(None, Some(ActiveBlock::TrackTable));
+        app.set_current_route_state(None, Some(ActiveBlock::ItemTable));
         handler(Key::Left, &mut app);
         let current_route = app.get_current_route();
         assert_eq!(current_route.hovered_block, ActiveBlock::Library);
@@ -147,19 +147,19 @@ mod tests {
         assert_eq!(current_route.hovered_block, ActiveBlock::SearchResultBlock);
 
         app.set_current_route_state(None, Some(ActiveBlock::Library));
-        app.push_navigation_stack(RouteId::TrackTable, ActiveBlock::TrackTable);
+        app.push_navigation_stack(RouteId::ItemTable, ActiveBlock::ItemTable);
         handler(Key::Right, &mut app);
         let current_route = app.get_current_route();
 
-        assert_eq!(current_route.active_block, ActiveBlock::TrackTable);
-        assert_eq!(current_route.hovered_block, ActiveBlock::TrackTable);
+        assert_eq!(current_route.active_block, ActiveBlock::ItemTable);
+        assert_eq!(current_route.hovered_block, ActiveBlock::ItemTable);
 
         app.set_current_route_state(None, Some(ActiveBlock::Library));
-        app.push_navigation_stack(RouteId::TrackTable, ActiveBlock::TrackTable);
+        app.push_navigation_stack(RouteId::ItemTable, ActiveBlock::ItemTable);
         handler(Key::Right, &mut app);
         let current_route = app.get_current_route();
-        assert_eq!(current_route.active_block, ActiveBlock::TrackTable);
-        assert_eq!(current_route.hovered_block, ActiveBlock::TrackTable);
+        assert_eq!(current_route.active_block, ActiveBlock::ItemTable);
+        assert_eq!(current_route.hovered_block, ActiveBlock::ItemTable);
 
         app.push_navigation_stack(RouteId::Home, ActiveBlock::Home);
         app.set_current_route_state(Some(ActiveBlock::Empty), Some(ActiveBlock::Library));

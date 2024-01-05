@@ -8,6 +8,7 @@ mod network;
 mod redirect_uri;
 mod ui;
 mod user_config;
+mod util;
 
 use crate::app::RouteId;
 use crate::event::Key;
@@ -15,7 +16,8 @@ use anyhow::{anyhow, Result};
 use app::{ActiveBlock, App};
 use backtrace::Backtrace;
 use banner::BANNER;
-use clap::{App as ClapApp, Arg, Shell};
+use clap::{Arg, Command};
+use clap_complete::Shell;
 use config::ClientConfig;
 use crossterm::{
     cursor::MoveTo,
@@ -126,7 +128,7 @@ async fn main() -> Result<()> {
         panic_hook(info);
     }));
 
-    let mut clap_app = ClapApp::new(env!("CARGO_PKG_NAME"))
+    let mut clap_app = Command::new(env!("CARGO_PKG_NAME"))
     .version(env!("CARGO_PKG_VERSION"))
     .author(env!("CARGO_PKG_AUTHORS"))
     .about(env!("CARGO_PKG_DESCRIPTION"))

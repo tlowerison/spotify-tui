@@ -74,12 +74,12 @@ pub fn get_help_docs(key_bindings: &KeyBindings) -> Vec<Vec<String>> {
         ],
         vec![
             String::from("Copy url to currently playing song/episode"),
-            key_bindings.copy_song_url.to_string(),
+            key_bindings.copy_playing_item_url.to_string(),
             String::from("General"),
         ],
         vec![
             String::from("Copy url to currently playing album/show"),
-            key_bindings.copy_album_url.to_string(),
+            key_bindings.copy_playing_item_parent_url.to_string(),
             String::from("General"),
         ],
         vec![

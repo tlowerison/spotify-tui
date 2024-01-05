@@ -12,6 +12,7 @@ mod error_screen;
 mod help_menu;
 mod home;
 mod input;
+mod item_table;
 mod library;
 mod made_for_you;
 mod playbar;
@@ -20,12 +21,11 @@ mod podcasts;
 mod recently_played;
 mod search_results;
 mod select_device;
-mod track_table;
 
 use super::app::{ActiveBlock, App, ArtistBlock, RouteId, SearchResultBlock};
 use crate::event::Key;
 use crate::network::IoEvent;
-use rspotify::model::{context::CurrentlyPlaybackContext, PlayingItem};
+use rspotify::model::{context::CurrentPlaybackContext, PlayableItem};
 
 pub use input::handler as input_handler;
 
@@ -82,11 +82,11 @@ pub fn handle_app(key: Key, app: &mut App) {
         _ if key == app.user_config.keys.search => {
             app.set_current_route_state(Some(ActiveBlock::Input), Some(ActiveBlock::Input));
         }
-        _ if key == app.user_config.keys.copy_song_url => {
-            app.copy_song_url();
+        _ if key == app.user_config.keys.copy_playing_item_url => {
+            app.copy_playing_item_url();
         }
-        _ if key == app.user_config.keys.copy_album_url => {
-            app.copy_album_url();
+        _ if key == app.user_config.keys.copy_playing_item_parent_url => {
+            app.copy_playing_item_parent_url();
         }
         _ if key == app.user_config.keys.audio_analysis => {
             app.get_audio_analysis();
@@ -114,8 +114,8 @@ fn handle_block_events(key: Key, app: &mut App) {
         ActiveBlock::MyPlaylists => {
             playlist::handler(key, app);
         }
-        ActiveBlock::TrackTable => {
-            track_table::handler(key, app);
+        ActiveBlock::ItemTable => {
+            item_table::handler(key, app);
         }
         ActiveBlock::EpisodeTable => {
             episode_table::handler(key, app);
@@ -199,11 +199,12 @@ fn handle_jump_to_context(app: &mut App) {
     if let Some(current_playback_context) = &app.current_playback_context {
         if let Some(play_context) = current_playback_context.context.clone() {
             match play_context._type {
-                rspotify::senum::Type::Album => handle_jump_to_album(app),
-                rspotify::senum::Type::Artist => handle_jump_to_artist_album(app),
-                rspotify::senum::Type::Playlist => {
-                    app.dispatch(IoEvent::GetPlaylistTracks(play_context.uri, 0))
-                }
+                rspotify::model::enums::Type::Album => handle_jump_to_album(app),
+                rspotify::model::enums::Type::Artist => handle_jump_to_artist_album(app),
+                rspotify::model::enums::Type::Playlist => app.dispatch(IoEvent::GetPlaylistItems {
+                    playlist_id: rspotify::model::PlaylistId::from_uri(&play_context.uri).unwrap(),
+                    offset: 0,
+                }),
                 _ => {}
             }
         }
@@ -211,16 +212,20 @@ fn handle_jump_to_context(app: &mut App) {
 }
 
 fn handle_jump_to_album(app: &mut App) {
-    if let Some(CurrentlyPlaybackContext {
+    if let Some(CurrentPlaybackContext {
         item: Some(item), ..
     }) = app.current_playback_context.to_owned()
     {
         match item {
-            PlayingItem::Track(track) => {
-                app.dispatch(IoEvent::GetAlbumTracks(Box::new(track.album)));
+            PlayableItem::Track(track) => {
+                app.dispatch(IoEvent::GetAlbumTracks {
+                    album: Box::new(track.album),
+                });
             }
-            PlayingItem::Episode(episode) => {
-                app.dispatch(IoEvent::GetShowEpisodes(Box::new(episode.show)));
+            PlayableItem::Episode(episode) => {
+                app.dispatch(IoEvent::GetShowEpisodes {
+                    show: Box::new(episode.show),
+                });
             }
         };
     }
@@ -228,12 +233,12 @@ fn handle_jump_to_album(app: &mut App) {
 
 // NOTE: this only finds the first artist of the song and jumps to their albums
 fn handle_jump_to_artist_album(app: &mut App) {
-    if let Some(CurrentlyPlaybackContext {
+    if let Some(CurrentPlaybackContext {
         item: Some(item), ..
     }) = app.current_playback_context.to_owned()
     {
         match item {
-            PlayingItem::Track(track) => {
+            PlayableItem::Track(track) => {
                 if let Some(artist) = track.artists.first() {
                     if let Some(artist_id) = artist.id.clone() {
                         app.get_artist(artist_id, artist.name.clone());
@@ -241,7 +246,7 @@ fn handle_jump_to_artist_album(app: &mut App) {
                     }
                 }
             }
-            PlayingItem::Episode(_episode) => {
+            PlayableItem::Episode(_episode) => {
                 // Do nothing for episode (yet!)
             }
         }

@@ -1,5 +1,5 @@
 use super::{
-    super::app::{App, TrackTableContext},
+    super::app::{App, ItemTableContext},
     common_key_events,
 };
 use crate::event::Key;
@@ -49,17 +49,17 @@ pub fn handler(key: Key, app: &mut App) {
                 &app.library.made_for_you_playlists.get_results(Some(0)),
                 &app.made_for_you_index,
             ) {
-                app.track_table.context = Some(TrackTableContext::MadeForYou);
+                app.item_table.context = Some(ItemTableContext::MadeForYou);
                 app.playlist_offset = 0;
                 if let Some(selected_playlist) =
                     playlists.items.get(selected_playlist_index.to_owned())
                 {
                     app.made_for_you_offset = 0;
-                    let playlist_id = selected_playlist.id.to_owned();
-                    app.dispatch(IoEvent::GetMadeForYouPlaylistTracks(
+                    let playlist_id = selected_playlist.id.clone();
+                    app.dispatch(IoEvent::GetMadeForYouPlaylistItems {
                         playlist_id,
-                        app.made_for_you_offset,
-                    ));
+                        offset: app.made_for_you_offset,
+                    });
                 }
             };
         }

@@ -1,5 +1,5 @@
 use super::{
-    super::app::{App, DialogContext, TrackTableContext},
+    super::app::{App, DialogContext, ItemTableContext},
     common_key_events,
 };
 use crate::app::{ActiveBlock, RouteId};
@@ -67,13 +67,16 @@ pub fn handler(key: Key, app: &mut App) {
                 (&app.playlists, &app.selected_playlist_index)
             {
                 app.active_playlist_index = Some(selected_playlist_index.to_owned());
-                app.track_table.context = Some(TrackTableContext::MyPlaylists);
+                app.item_table.context = Some(ItemTableContext::MyPlaylists);
                 app.playlist_offset = 0;
                 if let Some(selected_playlist) =
                     playlists.items.get(selected_playlist_index.to_owned())
                 {
                     let playlist_id = selected_playlist.id.to_owned();
-                    app.dispatch(IoEvent::GetPlaylistTracks(playlist_id, app.playlist_offset));
+                    app.dispatch(IoEvent::GetPlaylistItems {
+                        playlist_id,
+                        offset: app.playlist_offset,
+                    });
                 }
             };
         }

@@ -1,10 +1,8 @@
 use clap::ArgMatches;
-use rspotify::{
-    model::{
-        album::SimplifiedAlbum, artist::FullArtist, artist::SimplifiedArtist,
-        playlist::SimplifiedPlaylist, show::FullEpisode, show::SimplifiedShow, track::FullTrack,
-    },
-    senum::RepeatState,
+use rspotify::model::{
+    album::SimplifiedAlbum, artist::FullArtist, artist::SimplifiedArtist, enums::RepeatState,
+    idtypes::Id, playlist::SimplifiedPlaylist, show::FullEpisode, show::SimplifiedShow,
+    track::FullTrack,
 };
 
 use crate::user_config::UserConfig;
@@ -12,26 +10,27 @@ use crate::user_config::UserConfig;
 // Possible types to list or search
 #[derive(Debug)]
 pub enum Type {
-    Playlist,
-    Track,
-    Artist,
     Album,
-    Show,
+    Artist,
     Device,
+    Episode,
     Liked,
+    Playlist,
+    Show,
+    Track,
 }
 
 impl Type {
-    pub fn play_from_matches(m: &ArgMatches<'_>) -> Self {
-        if m.is_present("playlist") {
+    pub fn play_from_matches(m: &ArgMatches) -> Self {
+        if m.contains_id("playlist") {
             Self::Playlist
-        } else if m.is_present("track") {
+        } else if m.contains_id("track") {
             Self::Track
-        } else if m.is_present("artist") {
+        } else if m.contains_id("artist") {
             Self::Artist
-        } else if m.is_present("album") {
+        } else if m.contains_id("album") {
             Self::Album
-        } else if m.is_present("show") {
+        } else if m.contains_id("show") {
             Self::Show
         }
         // Enforced by clap
@@ -40,16 +39,16 @@ impl Type {
         }
     }
 
-    pub fn search_from_matches(m: &ArgMatches<'_>) -> Self {
-        if m.is_present("playlists") {
+    pub fn search_from_matches(m: &ArgMatches) -> Self {
+        if m.contains_id("playlists") {
             Self::Playlist
-        } else if m.is_present("tracks") {
+        } else if m.contains_id("tracks") {
             Self::Track
-        } else if m.is_present("artists") {
+        } else if m.contains_id("artists") {
             Self::Artist
-        } else if m.is_present("albums") {
+        } else if m.contains_id("albums") {
             Self::Album
-        } else if m.is_present("shows") {
+        } else if m.contains_id("shows") {
             Self::Show
         }
         // Enforced by clap
@@ -58,12 +57,12 @@ impl Type {
         }
     }
 
-    pub fn list_from_matches(m: &ArgMatches<'_>) -> Self {
-        if m.is_present("playlists") {
+    pub fn list_from_matches(m: &ArgMatches) -> Self {
+        if m.contains_id("playlists") {
             Self::Playlist
-        } else if m.is_present("devices") {
+        } else if m.contains_id("devices") {
             Self::Device
-        } else if m.is_present("liked") {
+        } else if m.contains_id("liked") {
             Self::Liked
         }
         // Enforced by clap
@@ -87,21 +86,21 @@ pub enum Flag {
 }
 
 impl Flag {
-    pub fn from_matches(m: &ArgMatches<'_>) -> Vec<Self> {
+    pub fn from_matches(m: &ArgMatches) -> Vec<Self> {
         // Multiple flags are possible
         let mut flags = Vec::new();
 
         // Only one of these two
-        if m.is_present("like") {
+        if m.contains_id("like") {
             flags.push(Self::Like(true));
-        } else if m.is_present("dislike") {
+        } else if m.contains_id("dislike") {
             flags.push(Self::Like(false));
         }
 
-        if m.is_present("shuffle") {
+        if m.contains_id("shuffle") {
             flags.push(Self::Shuffle);
         }
-        if m.is_present("repeat") {
+        if m.contains_id("repeat") {
             flags.push(Self::Repeat);
         }
         flags
@@ -115,11 +114,17 @@ pub enum JumpDirection {
 }
 
 impl JumpDirection {
-    pub fn from_matches(m: &ArgMatches<'_>) -> (Self, u64) {
-        if m.is_present("next") {
-            (Self::Next, m.occurrences_of("next"))
-        } else if m.is_present("previous") {
-            (Self::Previous, m.occurrences_of("previous"))
+    pub fn from_matches(m: &ArgMatches) -> (Self, u64) {
+        if m.contains_id("next") {
+            (
+                Self::Next,
+                m.get_raw_occurrences("next").unwrap().count() as u64,
+            )
+        } else if m.contains_id("previous") {
+            (
+                Self::Previous,
+                m.get_raw_occurrences("previous").unwrap().count() as u64,
+            )
         // Enforced by clap
         } else {
             unreachable!()
@@ -167,39 +172,49 @@ pub fn join_artists(a: Vec<SimplifiedArtist>) -> String {
 }
 
 impl Format {
+    fn try_append_uri(id: Option<impl Id>, mut items: Vec<Self>) -> Vec<Self> {
+        if let Some(id) = id {
+            items.push(Self::Uri(id.uri()));
+        }
+        items
+    }
     // Extract important information from types
     pub fn from_type(t: FormatType) -> Vec<Self> {
         match t {
             FormatType::Album(a) => {
                 let joined_artists = join_artists(a.artists.clone());
-                let mut vec = vec![Self::Album(a.name), Self::Artist(joined_artists)];
-                if let Some(uri) = a.uri {
-                    vec.push(Self::Uri(uri));
-                }
-                vec
+                Self::try_append_uri(
+                    a.id,
+                    vec![Self::Album(a.name), Self::Artist(joined_artists)],
+                )
             }
-            FormatType::Artist(a) => vec![Self::Artist(a.name), Self::Uri(a.uri)],
-            FormatType::Playlist(p) => vec![Self::Playlist(p.name), Self::Uri(p.uri)],
+            FormatType::Artist(a) => Self::try_append_uri(Some(a.id), vec![Self::Artist(a.name)]),
+            FormatType::Playlist(p) => {
+                Self::try_append_uri(Some(p.id), vec![Self::Playlist(p.name)])
+            }
             FormatType::Track(t) => {
                 let joined_artists = join_artists(t.artists.clone());
-                vec![
-                    Self::Album(t.album.name),
-                    Self::Artist(joined_artists),
-                    Self::Track(t.name),
-                    Self::Uri(t.uri),
-                ]
+                Self::try_append_uri(
+                    t.id,
+                    vec![
+                        Self::Album(t.album.name),
+                        Self::Artist(joined_artists),
+                        Self::Track(t.name),
+                    ],
+                )
             }
-            FormatType::Show(r) => vec![
-                Self::Artist(r.publisher),
-                Self::Show(r.name),
-                Self::Uri(r.uri),
-            ],
-            FormatType::Episode(e) => vec![
-                Self::Show(e.show.name),
-                Self::Artist(e.show.publisher),
-                Self::Track(e.name),
-                Self::Uri(e.uri),
-            ],
+            FormatType::Show(r) => Self::try_append_uri(
+                Some(r.id),
+                vec![Self::Artist(r.publisher), Self::Show(r.name)],
+            ),
+            FormatType::Episode(e) => Self::try_append_uri(
+                Some(e.id),
+                vec![
+                    Self::Show(e.show.name),
+                    Self::Artist(e.show.publisher),
+                    Self::Track(e.name),
+                ],
+            ),
         }
     }
 

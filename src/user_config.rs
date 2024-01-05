@@ -168,8 +168,8 @@ pub struct KeyBindingsString {
     repeat: Option<String>,
     search: Option<String>,
     submit: Option<String>,
-    copy_song_url: Option<String>,
-    copy_album_url: Option<String>,
+    copy_playing_item_url: Option<String>,
+    copy_playing_item_parent_url: Option<String>,
     audio_analysis: Option<String>,
     basic_view: Option<String>,
     add_item_to_queue: Option<String>,
@@ -198,8 +198,8 @@ pub struct KeyBindings {
     pub repeat: Key,
     pub search: Key,
     pub submit: Key,
-    pub copy_song_url: Key,
-    pub copy_album_url: Key,
+    pub copy_playing_item_url: Key,
+    pub copy_playing_item_parent_url: Key,
     pub audio_analysis: Key,
     pub basic_view: Key,
     pub add_item_to_queue: Key,
@@ -280,8 +280,8 @@ impl UserConfig {
                 repeat: Key::Ctrl('r'),
                 search: Key::Char('/'),
                 submit: Key::Enter,
-                copy_song_url: Key::Char('c'),
-                copy_album_url: Key::Char('C'),
+                copy_playing_item_url: Key::Char('c'),
+                copy_playing_item_parent_url: Key::Char('C'),
                 audio_analysis: Key::Char('v'),
                 basic_view: Key::Char('B'),
                 add_item_to_queue: Key::Char('z'),
@@ -363,8 +363,8 @@ impl UserConfig {
         to_keys!(repeat);
         to_keys!(search);
         to_keys!(submit);
-        to_keys!(copy_song_url);
-        to_keys!(copy_album_url);
+        to_keys!(copy_playing_item_url);
+        to_keys!(copy_playing_item_parent_url);
         to_keys!(audio_analysis);
         to_keys!(basic_view);
         to_keys!(add_item_to_queue);

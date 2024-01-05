@@ -9,9 +9,7 @@ use super::{
     banner::BANNER,
 };
 use help::get_help_docs;
-use rspotify::model::show::ResumePoint;
-use rspotify::model::PlayingItem;
-use rspotify::senum::RepeatState;
+use rspotify::model::{enums::RepeatState, show::ResumePoint, PlayableItem};
 use tui::{
     backend::Backend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -242,7 +240,7 @@ where
         RouteId::Search => {
             draw_search_results(f, app, chunks[1]);
         }
-        RouteId::TrackTable => {
+        RouteId::ItemTable => {
             draw_song_table(f, app, chunks[1]);
         }
         RouteId::AlbumTracks => {
@@ -391,8 +389,8 @@ where
             .clone()
             .and_then(|context| {
                 context.item.and_then(|item| match item {
-                    PlayingItem::Track(track) => track.id,
-                    PlayingItem::Episode(episode) => Some(episode.id),
+                    PlayableItem::Track(track) => track.id,
+                    PlayableItem::Episode(episode) => Some(episode.id),
                 })
             })
             .unwrap_or_else(|| "".to_string());
@@ -791,12 +789,12 @@ where
 
     let current_route = app.get_current_route();
     let highlight_state = (
-        current_route.active_block == ActiveBlock::TrackTable,
-        current_route.hovered_block == ActiveBlock::TrackTable,
+        current_route.active_block == ActiveBlock::ItemTable,
+        current_route.hovered_block == ActiveBlock::ItemTable,
     );
 
     let items = app
-        .track_table
+        .item_table
         .tracks
         .iter()
         .map(|item| TableItem {
@@ -828,7 +826,7 @@ where
         layout_chunk,
         (&recommendations_ui[..], &header),
         &items,
-        app.track_table.selected_index,
+        app.item_table.selected_index,
         highlight_state,
     )
 }
@@ -870,12 +868,12 @@ where
 
     let current_route = app.get_current_route();
     let highlight_state = (
-        current_route.active_block == ActiveBlock::TrackTable,
-        current_route.hovered_block == ActiveBlock::TrackTable,
+        current_route.active_block == ActiveBlock::ItemTable,
+        current_route.hovered_block == ActiveBlock::ItemTable,
     );
 
     let items = app
-        .track_table
+        .item_table
         .tracks
         .iter()
         .map(|item| TableItem {
@@ -896,7 +894,7 @@ where
         layout_chunk,
         ("Songs", &header),
         &items,
-        app.track_table.selected_index,
+        app.item_table.selected_index,
         highlight_state,
     )
 }
@@ -989,12 +987,12 @@ where
             f.render_widget(title_block, layout_chunk);
 
             let (item_id, name, duration_ms) = match track_item {
-                PlayingItem::Track(track) => (
+                PlayableItem::Track(track) => (
                     track.id.to_owned().unwrap_or_else(|| "".to_string()),
                     track.name.to_owned(),
                     track.duration_ms,
                 ),
-                PlayingItem::Episode(episode) => (
+                PlayableItem::Episode(episode) => (
                     episode.id.to_owned(),
                     episode.name.to_owned(),
                     episode.duration_ms,
@@ -1008,8 +1006,8 @@ where
             };
 
             let play_bar_text = match track_item {
-                PlayingItem::Track(track) => create_artist_string(&track.artists),
-                PlayingItem::Episode(episode) => {
+                PlayableItem::Track(track) => create_artist_string(&track.artists),
+                PlayableItem::Episode(episode) => {
                     format!("{} - {}", episode.name, episode.show.name)
                 }
             };
@@ -1207,8 +1205,8 @@ where
                 let mut name = String::new();
                 if let Some(context) = &app.current_playback_context {
                     let track_id = match &context.item {
-                        Some(PlayingItem::Track(track)) => track.id.to_owned(),
-                        Some(PlayingItem::Episode(episode)) => Some(episode.id.to_owned()),
+                        Some(PlayableItem::Track(track)) => track.id.to_owned(),
+                        Some(PlayableItem::Episode(episode)) => Some(episode.id.to_owned()),
                         _ => None,
                     };
 
@@ -1769,10 +1767,10 @@ fn draw_table<B>(
 
     let track_playing_index = app.current_playback_context.to_owned().and_then(|ctx| {
         ctx.item.and_then(|item| match item {
-            PlayingItem::Track(track) => items
+            PlayableItem::Track(track) => items
                 .iter()
                 .position(|item| track.id.to_owned().map(|id| id == item.id).unwrap_or(false)),
-            PlayingItem::Episode(episode) => items.iter().position(|item| episode.id == item.id),
+            PlayableItem::Episode(episode) => items.iter().position(|item| episode.id == item.id),
         })
     });
 

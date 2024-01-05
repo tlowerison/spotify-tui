@@ -3,6 +3,7 @@ extern crate unicode_width;
 use super::super::app::{ActiveBlock, App, RouteId};
 use crate::event::Key;
 use crate::network::IoEvent;
+use rspotify::model::idtypes::*;
 use std::convert::TryInto;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -110,7 +111,10 @@ fn process_input(app: &mut App, input: String) {
     }
 
     // Default fallback behavior: treat the input as a raw search phrase.
-    app.dispatch(IoEvent::GetSearchResults(input, app.get_user_country()));
+    app.dispatch(IoEvent::GetSearchResults {
+        search_term: input,
+        country: app.get_user_country(),
+    });
     app.push_navigation_stack(RouteId::Search, ActiveBlock::SearchResultBlock);
 }
 
@@ -130,12 +134,14 @@ fn spotify_resource_id(base: &str, uri: &str, sep: &str, resource_type: &str) ->
 fn attempt_process_uri(app: &mut App, input: &str, base: &str, sep: &str) -> bool {
     let (album_id, matched) = spotify_resource_id(base, input, sep, "album");
     if matched {
-        app.dispatch(IoEvent::GetAlbum(album_id));
+        let album_id = AlbumId::from_id(&album_id).unwrap();
+        app.dispatch(IoEvent::GetAlbum { album_id });
         return true;
     }
 
     let (artist_id, matched) = spotify_resource_id(base, input, sep, "artist");
     if matched {
+        let artist_id = ArtistId::from_id(&artist_id).unwrap();
         app.get_artist(artist_id, "".to_string());
         app.push_navigation_stack(RouteId::Artist, ActiveBlock::ArtistBlock);
         return true;
@@ -143,19 +149,25 @@ fn attempt_process_uri(app: &mut App, input: &str, base: &str, sep: &str) -> boo
 
     let (track_id, matched) = spotify_resource_id(base, input, sep, "track");
     if matched {
-        app.dispatch(IoEvent::GetAlbumForTrack(track_id));
+        let track_id = TrackId::from_id(&track_id).unwrap();
+        app.dispatch(IoEvent::GetAlbumForTrack { track_id });
         return true;
     }
 
     let (playlist_id, matched) = spotify_resource_id(base, input, sep, "playlist");
     if matched {
-        app.dispatch(IoEvent::GetPlaylistTracks(playlist_id, 0));
+        let playlist_id = PlaylistId::from_id(&playlist_id).unwrap();
+        app.dispatch(IoEvent::GetPlaylistItems {
+            playlist_id,
+            offset: 0,
+        });
         return true;
     }
 
     let (show_id, matched) = spotify_resource_id(base, input, sep, "show");
     if matched {
-        app.dispatch(IoEvent::GetShow(show_id));
+        let show_id = ShowId::from_id(&show_id).unwrap();
+        app.dispatch(IoEvent::GetShow { show_id });
         return true;
     }
 

@@ -1,71 +1,75 @@
-use std::{io::stdin, sync::mpsc, thread, time::Duration};
-use termion::{event::Key, input::TermRead};
+use rspotify::model::enums::types::Type;
+use rspotify::model::{idtypes::*, PlayableItem};
 
-pub enum Event<I> {
-    Input(I),
-    Tick,
+pub fn fmt_id<T: Id>(id: &T, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+    write!(f, "{}", id.id())
 }
 
-/// A small event handler that wrap termion input and tick events. Each event
-/// type is handled in its own thread and returned to a common `Receiver`
-pub struct Events {
-    rx: mpsc::Receiver<Event<Key>>,
+pub fn fmt_ids<T: Id>(id: &[T], f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+    f.debug_list().entries(id.iter().map(|id| id.id())).finish()
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Config {
-    pub exit_key: Key,
-    pub tick_rate: Duration,
+pub fn fmt_opt_ids<T: Id>(
+    id: &Option<Vec<T>>,
+    f: &mut std::fmt::Formatter,
+) -> Result<(), std::fmt::Error> {
+    match id {
+        Some(id) => f.debug_list().entries(id.iter().map(|id| id.id())).finish(),
+        None => f.write_str("None"),
+    }
 }
 
-impl Default for Config {
-    fn default() -> Config {
-        Config {
-            exit_key: Key::Ctrl('c'),
-            tick_rate: Duration::from_millis(250),
+pub trait ParseFromUri<'a> {
+    fn from_uri(uri: &'a str) -> Result<Self, IdError>
+    where
+        Self: Sized + 'a;
+}
+
+pub trait PlaybleItemExt {
+    type Id<'a>
+    where
+        Self: 'a;
+    fn id(&self) -> Self::Id<'_>;
+    fn duration(&self) -> &chrono::Duration;
+}
+
+impl PlaybleItemExt for PlayableItem {
+    type Id<'a> = Option<PlayableId<'a>> where Self: 'a;
+    fn id(&self) -> Self::Id<'_> {
+        match self {
+            PlayableItem::Episode(episode) => Some(PlayableId::from(episode.id)),
+            PlayableItem::Track(track) => track.id.map(PlayableId::from),
+        }
+    }
+    fn duration(&self) -> &chrono::Duration {
+        match self {
+            PlayableItem::Episode(episode) => &episode.duration,
+            PlayableItem::Track(track) => &track.duration,
         }
     }
 }
 
-impl Events {
-    pub fn new() -> Events {
-        Events::with_config(Config::default())
-    }
-
-    pub fn with_config(config: Config) -> Events {
-        let (tx, rx) = mpsc::channel();
-        let _input_handle = {
-            let tx = tx.clone();
-            thread::spawn(move || {
-                let stdin_result = stdin();
-                for evt in stdin_result.keys() {
-                    if let Ok(key) = evt {
-                        if tx.send(Event::Input(key)).is_err() {
-                            return;
-                        }
-                        if key == config.exit_key {
-                            return;
-                        }
-                    }
+macro_rules! id_enum {
+    ($name:ident { $($ty:ident),*$(,)? }) => { ::paste::paste! {
+        impl<'a> ParseFromUri<'a> for $name<'a> {
+            fn from_uri(uri: &'a str) -> Result<Self, IdError>
+            where
+                Self: Sized + 'a,
+            {
+                let (ty, id) = parse_uri(&uri)?;
+                match ty {
+                    $(Type::$ty => Ok([<$ty Id>]::from_id(id)?.into()),)*
+                    _ => Err(IdError::InvalidType),
                 }
-            })
-        };
-
-        let _tick_handle = {
-            let tx = tx;
-            thread::spawn(move || {
-                let tx = tx.clone();
-                loop {
-                    tx.send(Event::Tick).unwrap();
-                    thread::sleep(config.tick_rate);
-                }
-            })
-        };
-
-        Events { rx }
-    }
-
-    pub fn next(&self) -> Result<Event<Key>, mpsc::RecvError> {
-        self.rx.recv()
-    }
+            }
+        }
+    } };
 }
+
+id_enum!(PlayContextId {
+    Album,
+    Artist,
+    Playlist,
+    Show,
+});
+id_enum!(PlayableId { Episode, Track });

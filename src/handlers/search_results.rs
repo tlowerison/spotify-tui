@@ -1,12 +1,13 @@
 use super::{
     super::app::{
-        ActiveBlock, App, DialogContext, RecommendationsContext, RouteId, SearchResultBlock,
-        TrackTableContext,
+        ActiveBlock, App, DialogContext, ItemTableContext, RecommendationsContext, RouteId,
+        SearchResultBlock,
     },
     common_key_events,
 };
 use crate::event::Key;
 use crate::network::IoEvent;
+use rspotify::model::idtypes::*;
 
 fn handle_down_press_on_selected_block(app: &mut App) {
     // Start selecting within the selected block
@@ -269,9 +270,10 @@ fn handle_add_item_to_queue(app: &mut App) {
                 app.search_results.selected_tracks_index,
                 &app.search_results.tracks,
             ) {
-                if let Some(track) = tracks.items.get(index) {
-                    let uri = track.uri.clone();
-                    app.dispatch(IoEvent::AddItemToQueue(uri));
+                if let Some(track_id) = tracks.items.get(index).and_then(|track| track.id.clone()) {
+                    app.dispatch(IoEvent::AddItemToQueue {
+                        playable_id: track_id.into(),
+                    });
                 }
             }
         }
@@ -291,22 +293,28 @@ fn handle_enter_event_on_selected_block(app: &mut App) {
                 &app.search_results.albums,
             ) {
                 if let Some(album) = albums_result.items.get(index.to_owned()).cloned() {
-                    app.track_table.context = Some(TrackTableContext::AlbumSearch);
-                    app.dispatch(IoEvent::GetAlbumTracks(Box::new(album)));
+                    app.item_table.context = Some(ItemTableContext::AlbumSearch);
+                    app.dispatch(IoEvent::GetAlbumTracks {
+                        album: Box::new(album),
+                    });
                 };
             }
         }
         SearchResultBlock::SongSearch => {
-            let index = app.search_results.selected_tracks_index;
+            let offset = app.search_results.selected_tracks_index.map(|x| x as u32);
             let tracks = app.search_results.tracks.clone();
-            let track_uris = tracks.map(|tracks| {
-                tracks
-                    .items
-                    .into_iter()
-                    .map(|track| track.uri)
-                    .collect::<Vec<String>>()
+            let playable_ids = tracks
+                .map(|x| x.items)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|track| track.id)
+                .map(PlayableId::Track)
+                .collect::<Vec<_>>();
+
+            app.dispatch(IoEvent::StartPlayablesPlayback {
+                playable_ids,
+                offset,
             });
-            app.dispatch(IoEvent::StartPlayback(None, track_uris, index));
         }
         SearchResultBlock::ArtistSearch => {
             if let Some(index) = &app.search_results.selected_artists_index {
@@ -325,9 +333,12 @@ fn handle_enter_event_on_selected_block(app: &mut App) {
             ) {
                 if let Some(playlist) = playlists_result.items.get(index) {
                     // Go to playlist tracks table
-                    app.track_table.context = Some(TrackTableContext::PlaylistSearch);
+                    app.item_table.context = Some(ItemTableContext::PlaylistSearch);
                     let playlist_id = playlist.id.to_owned();
-                    app.dispatch(IoEvent::GetPlaylistTracks(playlist_id, app.playlist_offset));
+                    app.dispatch(IoEvent::GetPlaylistItems {
+                        playlist_id,
+                        offset: app.playlist_offset,
+                    });
                 };
             }
         }
@@ -338,7 +349,9 @@ fn handle_enter_event_on_selected_block(app: &mut App) {
             ) {
                 if let Some(show) = shows_result.items.get(index).cloned() {
                     // Go to show tracks table
-                    app.dispatch(IoEvent::GetShowEpisodes(Box::new(show)));
+                    app.dispatch(IoEvent::GetShowEpisodes {
+                        show: Box::new(show),
+                    });
                 };
             }
         }
@@ -389,12 +402,11 @@ fn handle_recommended_tracks(app: &mut App) {
             if let Some(index) = &app.search_results.selected_tracks_index {
                 if let Some(result) = app.search_results.tracks.clone() {
                     if let Some(track) = result.items.get(index.to_owned()) {
-                        let track_id_list: Option<Vec<String>> =
-                            track.id.as_ref().map(|id| vec![id.to_string()]);
+                        let track_ids = track.id.clone().map(|id| vec![id]);
 
                         app.recommendations_context = Some(RecommendationsContext::Song);
                         app.recommendations_seed = track.name.clone();
-                        app.get_recommendations_for_seed(None, track_id_list, Some(track.clone()));
+                        app.get_recommendations_for_seed(None, track_ids, Some(track.clone()));
                     };
                 };
             };
@@ -403,10 +415,10 @@ fn handle_recommended_tracks(app: &mut App) {
             if let Some(index) = &app.search_results.selected_artists_index {
                 if let Some(result) = app.search_results.artists.clone() {
                     if let Some(artist) = result.items.get(index.to_owned()) {
-                        let artist_id_list: Option<Vec<String>> = Some(vec![artist.id.clone()]);
+                        let artist_ids = Some(vec![artist.id.clone()]);
                         app.recommendations_context = Some(RecommendationsContext::Artist);
                         app.recommendations_seed = artist.name.clone();
-                        app.get_recommendations_for_seed(artist_id_list, None, None);
+                        app.get_recommendations_for_seed(artist_ids, None, None);
                     };
                 };
             };
