@@ -49,7 +49,7 @@ pub fn handler(key: Key, app: &mut App) {
             }
             // Liked Songs,
             2 => {
-                app.dispatch(IoEvent::GetCurrentSavedTracks { offset: None });
+                app.dispatch(IoEvent::GetCurrentUserSavedTracks { offset: None });
                 app.push_navigation_stack(RouteId::ItemTable, ActiveBlock::ItemTable);
             }
             // Albums,

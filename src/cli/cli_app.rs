@@ -1,13 +1,13 @@
 use super::util::{Flag, Format, FormatType, JumpDirection, Type};
 use crate::network::{IoEvent, Network};
 use crate::user_config::UserConfig;
-use crate::util::ParseFromUri;
 use anyhow::{anyhow, Result};
 use chrono::Duration;
 use rand::{thread_rng, Rng};
 use rspotify::clients::BaseClient;
 use rspotify::model::idtypes::*;
 use rspotify::model::{context::CurrentPlaybackContext, PlayableItem};
+use spotify_tui_util::ParseFromUri;
 
 pub struct CliApp<'a> {
     pub net: Network<'a>,
@@ -22,7 +22,7 @@ macro_rules! handle_error {
                 $self
                     .net
                     .app
-                    .lock()
+                    .write()
                     .await
                     .handle_error(anyhow!(err.to_string()));
                 return $($ret)?;
@@ -53,7 +53,7 @@ impl<'a> CliApp<'a> {
                     .await;
                 self.net
                     .app
-                    .lock()
+                    .read()
                     .await
                     .liked_song_ids_set
                     .contains(&track_id.into_static())
@@ -74,7 +74,7 @@ impl<'a> CliApp<'a> {
 
     // spt playback -t
     pub async fn toggle_playback(&mut self) {
-        let context = self.net.app.lock().await.current_playback_context.clone();
+        let context = self.net.app.read().await.current_playback_context.clone();
         if let Some(c) = context {
             if c.is_playing {
                 self.net.handle_network_event(IoEvent::PausePlayback).await;
@@ -87,7 +87,7 @@ impl<'a> CliApp<'a> {
     // spt pb --share-track (share the current playing song)
     // Basically copy-pasted the 'copy_playing_item_url' function
     pub async fn share_track_or_episode(&mut self) -> Result<String> {
-        let app = self.net.app.lock().await;
+        let app = self.net.app.read().await;
         let mut url = None;
         if let Some(CurrentPlaybackContext {
             item: Some(item), ..
@@ -103,7 +103,7 @@ impl<'a> CliApp<'a> {
     // spt pb --share-album (share the current album)
     // Basically copy-pasted the 'copy_playing_item_parent_url' function
     pub async fn share_album_or_show(&mut self) -> Result<String> {
-        let app = self.net.app.lock().await;
+        let app = self.net.app.read().await;
         let mut url = None;
         if let Some(CurrentPlaybackContext {
             item: Some(item), ..
@@ -120,7 +120,7 @@ impl<'a> CliApp<'a> {
     // spt ... -d ... (specify device to control)
     pub async fn set_device(&mut self, name: String) -> Result<()> {
         // Change the device if specified by user
-        let mut app = self.net.app.lock().await;
+        let mut app = self.net.app.write().await;
         let mut device_index = 0;
         if let Some(dp) = &app.devices {
             for (i, d) in dp.devices.iter().enumerate() {
@@ -192,7 +192,7 @@ impl<'a> CliApp<'a> {
     pub async fn list(&mut self, item: Type, format: &str) -> String {
         match item {
             Type::Device => {
-                if let Some(devices) = &self.net.app.lock().await.devices {
+                if let Some(devices) = &self.net.app.read().await.devices {
                     devices
                         .devices
                         .iter()
@@ -216,7 +216,7 @@ impl<'a> CliApp<'a> {
             }
             Type::Playlist => {
                 self.net.handle_network_event(IoEvent::GetPlaylists).await;
-                if let Some(playlists) = &self.net.app.lock().await.playlists {
+                if let Some(playlists) = &self.net.app.read().await.playlists {
                     playlists
                         .items
                         .iter()
@@ -234,12 +234,12 @@ impl<'a> CliApp<'a> {
             }
             Type::Liked => {
                 self.net
-                    .handle_network_event(IoEvent::GetCurrentSavedTracks { offset: None })
+                    .handle_network_event(IoEvent::GetCurrentUserSavedTracks { offset: None })
                     .await;
                 let liked_songs = self
                     .net
                     .app
-                    .lock()
+                    .read()
                     .await
                     .item_table
                     .items
@@ -268,7 +268,7 @@ impl<'a> CliApp<'a> {
     pub async fn transfer_playback(&mut self, device: &str) -> Result<()> {
         // Get the device id by name
         let mut device_id = String::new();
-        if let Some(devices) = &self.net.app.lock().await.devices {
+        if let Some(devices) = &self.net.app.read().await.devices {
             for d in &devices.devices {
                 if d.name == device {
                     let id = d.id.clone().ok_or_else(|| {
@@ -300,7 +300,7 @@ impl<'a> CliApp<'a> {
             self.net
                 .handle_network_event(IoEvent::GetCurrentPlayback)
                 .await;
-            let app = self.net.app.lock().await;
+            let app = self.net.app.read().await;
             if let Some(CurrentPlaybackContext {
                 progress: Some(progress),
                 item: Some(item),
@@ -351,7 +351,7 @@ impl<'a> CliApp<'a> {
     // spt playback --like / --dislike / --shuffle / --repeat
     pub async fn mark(&mut self, flag: Flag) -> Result<()> {
         let c = {
-            let app = self.net.app.lock().await;
+            let app = self.net.app.read().await;
             app.current_playback_context
                 .clone()
                 .ok_or_else(|| anyhow!("no context available"))?
@@ -410,13 +410,13 @@ impl<'a> CliApp<'a> {
             .handle_network_event(IoEvent::GetCurrentPlayback)
             .await;
         self.net
-            .handle_network_event(IoEvent::GetCurrentSavedTracks { offset: None })
+            .handle_network_event(IoEvent::GetCurrentUserSavedTracks { offset: None })
             .await;
 
         let context = self
             .net
             .app
-            .lock()
+            .read()
             .await
             .current_playback_context
             .clone()
@@ -546,7 +546,7 @@ impl<'a> CliApp<'a> {
         // Get the uri of the first found
         // item + the offset or return an error message
         let uri = {
-            let results = &self.net.app.lock().await.search_results;
+            let results = &self.net.app.read().await.search_results;
             match item {
                 Type::Album => results
                     .albums
@@ -566,15 +566,15 @@ impl<'a> CliApp<'a> {
                     .ok_or_else(|| anyhow!("no artists with name '{name}'"))?
                     .id
                     .uri(),
-                Type::Episode => results
-                    .episodes
-                    .as_ref()
-                    .map(|r| r.items.first())
-                    .flatten()
-                    .ok_or_else(|| anyhow!("no episodes with name '{name}'"))?
-                    .id
-                    .as_ref()
-                    .uri(),
+                // Type::Episode => results
+                //     .episodes
+                //     .as_ref()
+                //     .map(|r| r.items.first())
+                //     .flatten()
+                //     .ok_or_else(|| anyhow!("no episodes with name '{name}'"))?
+                //     .id
+                //     .as_ref()
+                //     .uri(),
                 Type::Playlist => results
                     .playlists
                     .as_ref()
@@ -620,7 +620,7 @@ impl<'a> CliApp<'a> {
             })
             .await;
 
-        let app = self.net.app.lock().await;
+        let app = self.net.app.read().await;
         match item {
             Type::Album => {
                 if let Some(results) = &app.search_results.albums {
@@ -656,23 +656,25 @@ impl<'a> CliApp<'a> {
                     format!("no artists with name '{}'", search)
                 }
             }
-            Type::Episode => {
-                if let Some(results) = &app.search_results.episodes {
-                    results
-                        .items
-                        .iter()
-                        .map(|r| {
-                            self.format_output(
-                                format.clone(),
-                                Format::from_type(FormatType::Episode(Box::new(r.clone()))),
-                            )
-                        })
-                        .collect::<Vec<String>>()
-                        .join("\n")
-                } else {
-                    format!("no episodes with name '{}'", search)
-                }
-            }
+            // Type::Episode => {
+            //     if let Some(results) = &app.search_results.episodes {
+            //         results
+            //             .items
+            //             .iter()
+            //             .map(|r| {
+            //                 self.format_output(
+            //                     format.clone(),
+            //                     Format::from_type(FormatType::SimplifiedEpisode(Box::new(
+            //                         r.clone(),
+            //                     ))),
+            //                 )
+            //             })
+            //             .collect::<Vec<String>>()
+            //             .join("\n")
+            //     } else {
+            //         format!("no episodes with name '{}'", search)
+            //     }
+            // }
             Type::Playlist => {
                 if let Some(results) = &app.search_results.playlists {
                     results

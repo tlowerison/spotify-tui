@@ -21,7 +21,7 @@ pub async fn handle_matches(
         .handle_network_event(IoEvent::GetCurrentPlayback)
         .await;
 
-    let devices_list = match &cli.net.app.lock().await.devices {
+    let devices_list = match &cli.net.app.read().await.devices {
         Some(p) => p
             .devices
             .iter()
@@ -149,7 +149,7 @@ pub async fn handle_matches(
     };
 
     // Check if there was an error
-    let api_error = cli.net.app.lock().await.api_error.clone();
+    let api_error = cli.net.app.read().await.api_error.clone();
     if api_error.is_empty() {
         output
     } else {

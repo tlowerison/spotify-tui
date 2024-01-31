@@ -69,11 +69,11 @@ where
         let segment = analysis
             .segments
             .iter()
-            .find(|segment| segment.start >= progress_seconds);
+            .find(|segment| segment.time_interval.start >= progress_seconds);
         let section = analysis
             .sections
             .iter()
-            .find(|section| section.start >= progress_seconds);
+            .find(|section| section.time_interval.start >= progress_seconds);
 
         if let (Some(segment), Some(section)) = (segment, section) {
             let texts = vec![

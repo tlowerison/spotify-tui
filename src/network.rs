@@ -4,9 +4,8 @@ use crate::app::{
     SelectedFullShow, SelectedShow,
 };
 use crate::config::ClientConfig;
-use crate::util::{fmt_id, fmt_ids, fmt_opt_ids};
 use anyhow::anyhow;
-use chrono::Duration;
+use chrono::{Duration, Utc};
 use derivative::Derivative;
 use futures_util::{future::try_join_all, try_join};
 use rspotify::model::{
@@ -22,14 +21,13 @@ use rspotify::model::{
     track::FullTrack,
     DevicePayload, Market, Offset, PlayableItem,
 };
-use rspotify::{clients::*, AuthCodePkceSpotify as Spotify, Credentials, OAuth, Token};
-use std::{
-    sync::Arc,
-    time::{Instant, SystemTime},
-};
-use tokio::sync::Mutex;
+use rspotify::{clients::*, AuthCodePkceSpotify};
+use serde::Deserialize;
+use spotify_tui_util::*;
+use std::{sync::Arc, time::Instant};
+use tokio::sync::RwLock;
 
-#[derive(Derivative)]
+#[derive(Derivative, ToStatic)]
 #[derivative(Debug)]
 pub enum IoEvent<'a> {
     AddItemToQueue {
@@ -50,6 +48,10 @@ pub enum IoEvent<'a> {
     CurrentUserSavedAlbumsContains {
         #[derivative(Debug(format_with = "fmt_ids"))]
         album_ids: Vec<AlbumId<'a>>,
+    },
+    CurrentUserSavedEpisodesContains {
+        #[derivative(Debug(format_with = "fmt_ids"))]
+        episode_ids: Vec<EpisodeId<'a>>,
     },
     CurrentUserSavedShowAdd {
         #[derivative(Debug(format_with = "fmt_id"))]
@@ -89,9 +91,6 @@ pub enum IoEvent<'a> {
         track_id: TrackId<'a>,
     },
     GetCurrentPlayback,
-    GetCurrentSavedTracks {
-        offset: Option<u32>,
-    },
     GetCurrentShowEpisodes {
         #[derivative(Debug(format_with = "fmt_id"))]
         show_id: ShowId<'a>,
@@ -101,6 +100,9 @@ pub enum IoEvent<'a> {
         offset: Option<u32>,
     },
     GetCurrentUserSavedShows {
+        offset: Option<u32>,
+    },
+    GetCurrentUserSavedTracks {
         offset: Option<u32>,
     },
     GetDevices,
@@ -214,31 +216,11 @@ pub enum IoEvent<'a> {
     },
 }
 
-pub fn get_spotify(token: Token) -> (Spotify, SystemTime) {
-    let token_expiry: SystemTime = {
-        if let Some(expires_at) = token.expires_at {
-            // Set 10 seconds early
-            (expires_at - Duration::seconds(10)).into()
-        } else {
-            SystemTime::now()
-        }
-    };
-
-    let client_credential = Credentials::default().token_info(token_info).build();
-
-    let spotify = Spotify::default()
-        .client_credentials_manager(client_credential)
-        .build();
-
-    (spotify, token_expiry)
-}
-
 #[derive(Clone)]
 pub struct Network<'a> {
-    pub spotify: Spotify,
+    pub spotify: AuthCodePkceSpotify,
     pub client_config: ClientConfig,
-    pub app: &'a Arc<Mutex<App>>,
-    oauth: OAuth,
+    pub app: &'a Arc<RwLock<App>>,
     large_search_limit: u32,
     small_search_limit: u32,
 }
@@ -255,15 +237,24 @@ macro_rules! handle_error {
     };
 }
 
+#[inline]
+fn join_ids<'a, T: Id + 'a>(ids: impl IntoIterator<Item = T>) -> String {
+    let ids = ids.into_iter().collect::<Vec<_>>();
+    ids.iter().map(Id::id).collect::<Vec<_>>().join(",")
+}
+
+/// Converts a JSON response from Spotify into its model.
+fn convert_result<'a, T: Deserialize<'a>>(input: &'a str) -> rspotify::ClientResult<T> {
+    serde_json::from_str::<T>(input).map_err(Into::into)
+}
+
 impl<'a> Network<'a> {
     pub fn new(
-        oauth: OAuth,
-        spotify: Spotify,
+        spotify: AuthCodePkceSpotify,
         client_config: ClientConfig,
-        app: &'a Arc<Mutex<App>>,
+        app: &'a Arc<RwLock<App>>,
     ) -> Self {
         Network {
-            oauth,
             spotify,
             large_search_limit: 20,
             small_search_limit: 4,
@@ -273,21 +264,58 @@ impl<'a> Network<'a> {
     }
 
     #[allow(clippy::cognitive_complexity)]
-    pub async fn handle_network_event(&mut self, io_event: IoEvent<'_>) {
-        match io_event {
-            IoEvent::RefreshAuthentication => self.refresh_authentication().await,
-            IoEvent::GetPlaylists => self.get_current_user_playlists().await,
-            IoEvent::GetUser => self.get_user().await,
-            IoEvent::GetDevices => self.get_devices().await,
-            IoEvent::GetCurrentPlayback => self.get_current_playback().await,
-            IoEvent::SetTracksToTable { tracks } => {
-                self.set_items_to_table(tracks.into_iter().map(PlayableItem::Track).collect())
-                    .await
+    pub async fn handle_network_event(&mut self, event: IoEvent<'_>) {
+        match event {
+            IoEvent::AddItemToQueue { playable_id } => self.add_item_to_queue(playable_id).await,
+            IoEvent::ChangeVolume { volume } => self.change_volume(volume).await,
+            IoEvent::CurrentUserSavedAlbumAdd { album_id } => {
+                self.current_user_saved_album_add(album_id).await
             }
-            IoEvent::GetSearchResults {
-                search_term,
+            IoEvent::CurrentUserSavedAlbumDelete { album_id } => {
+                self.current_user_saved_album_delete(album_id).await
+            }
+            IoEvent::CurrentUserSavedAlbumsContains { album_ids } => {
+                self.current_user_saved_albums_contains(album_ids).await
+            }
+            IoEvent::CurrentUserSavedEpisodesContains { episode_ids } => {
+                self.current_user_saved_episodes_contains(episode_ids).await
+            }
+            IoEvent::CurrentUserSavedShowAdd { show_id } => {
+                self.current_user_saved_shows_add(show_id).await
+            }
+            IoEvent::CurrentUserSavedShowDelete { show_id } => {
+                self.current_user_saved_shows_delete(show_id).await
+            }
+            IoEvent::CurrentUserSavedShowsContains { show_ids } => {
+                self.current_user_saved_shows_contains(show_ids).await
+            }
+            IoEvent::CurrentUserSavedTracksContains { track_ids } => {
+                self.current_user_saved_tracks_contains(track_ids).await
+            }
+            IoEvent::GetAlbum { album_id } => self.get_album(album_id).await,
+            IoEvent::GetAlbumForTrack { track_id } => self.get_album_for_track(track_id).await,
+            IoEvent::GetAlbumTracks { album } => self.get_album_tracks(album).await,
+            IoEvent::GetArtist {
+                artist_id,
+                input_artist_name,
                 country,
-            } => self.get_search_results(search_term, country).await,
+            } => self.get_artist(artist_id, input_artist_name, country).await,
+            IoEvent::GetTrackAnalysis { track_id } => self.get_track_analysis(track_id).await,
+            IoEvent::GetCurrentPlayback => self.get_current_playback().await,
+            IoEvent::GetCurrentShowEpisodes { show_id, offset } => {
+                self.get_current_show_episodes(show_id, offset).await
+            }
+            IoEvent::GetCurrentUserSavedAlbums { offset } => {
+                self.get_current_user_saved_albums(offset).await
+            }
+            IoEvent::GetCurrentUserSavedShows { offset } => {
+                self.get_current_user_saved_shows(offset).await
+            }
+            IoEvent::GetCurrentUserSavedTracks { offset } => {
+                self.get_current_user_saved_tracks(offset).await
+            }
+            IoEvent::GetDevices => self.get_devices().await,
+            IoEvent::GetFollowedArtists { after } => self.get_followed_artists(after).await,
             IoEvent::GetMadeForYouPlaylistItems {
                 playlist_id,
                 offset,
@@ -295,40 +323,12 @@ impl<'a> Network<'a> {
                 self.get_made_for_you_playlist_items(playlist_id, offset)
                     .await
             }
+            IoEvent::GetPlaylists => self.get_current_user_playlists().await,
             IoEvent::GetPlaylistItems {
                 playlist_id,
                 offset,
             } => self.get_playlist_items(playlist_id, offset).await,
-            IoEvent::GetCurrentSavedTracks { offset } => {
-                self.get_current_user_saved_tracks(offset).await
-            }
-            IoEvent::StartContextPlayback {
-                play_context_id,
-                offset,
-            } => self.start_context_playback(play_context_id, offset).await,
-            IoEvent::StartPlayablesPlayback {
-                playable_ids,
-                offset,
-            } => self.start_playables_playback(playable_ids, offset).await,
-            IoEvent::UpdateSearchLimits {
-                large_search_limit,
-                small_search_limit,
-            } => {
-                self.large_search_limit = large_search_limit;
-                self.small_search_limit = small_search_limit;
-            }
-            IoEvent::Seek { position_ms } => self.seek(position_ms).await,
-            IoEvent::NextTrack => self.next_track().await,
-            IoEvent::PreviousTrack => self.previous_track().await,
-            IoEvent::Repeat { state } => self.repeat(state).await,
-            IoEvent::PausePlayback => self.pause_playback().await,
-            IoEvent::ChangeVolume { volume } => self.change_volume(volume).await,
-            IoEvent::GetArtist {
-                artist_id,
-                input_artist_name,
-                country,
-            } => self.get_artist(artist_id, input_artist_name, country).await,
-            IoEvent::GetAlbumTracks { album } => self.get_album_tracks(album).await,
+            IoEvent::GetRecentlyPlayed => self.get_recently_played().await,
             IoEvent::GetRecommendationsForSeed {
                 seed_artist_ids,
                 seed_track_ids,
@@ -343,17 +343,53 @@ impl<'a> Network<'a> {
                 )
                 .await
             }
-            IoEvent::GetCurrentUserSavedAlbums { offset } => {
-                self.get_current_user_saved_albums(offset).await
+            IoEvent::GetRecommendationsForTrackId { track_id, country } => {
+                self.get_recommendations_for_track_id(track_id, country)
+                    .await
             }
-            IoEvent::CurrentUserSavedAlbumsContains { album_ids } => {
-                self.current_user_saved_albums_contains(album_ids).await
+            IoEvent::GetSearchResults {
+                search_term,
+                country,
+            } => self.get_search_results(search_term, country).await,
+            IoEvent::GetShow { show_id } => self.get_show(show_id).await,
+            IoEvent::GetShowEpisodes { show } => self.get_show_episodes(show).await,
+            IoEvent::GetUser => self.get_user().await,
+            IoEvent::MadeForYouSearchAndAdd {
+                search_term,
+                country,
+            } => self.made_for_you_search_and_add(search_term, country).await,
+            IoEvent::NextTrack => self.next_track().await,
+            IoEvent::PausePlayback => self.pause_playback().await,
+            IoEvent::PreviousTrack => self.previous_track().await,
+            IoEvent::RefreshAuthentication => self.refresh_authentication().await,
+            IoEvent::Repeat { state } => self.repeat(state).await,
+            IoEvent::ResumePlayback => self.resume_playback().await,
+            IoEvent::Seek { position_ms } => self.seek(position_ms).await,
+            IoEvent::SetArtistsToTable { artists } => self.set_artists_to_table(artists).await,
+            IoEvent::SetTracksToTable { tracks } => {
+                self.set_items_to_table(tracks.into_iter().map(PlayableItem::Track).collect())
+                    .await
             }
-            IoEvent::CurrentUserSavedAlbumDelete { album_id } => {
-                self.current_user_saved_album_delete(album_id).await
+            IoEvent::StartContextPlayback {
+                play_context_id,
+                offset,
+            } => self.start_context_playback(play_context_id, offset).await,
+            IoEvent::StartPlayablesPlayback {
+                playable_ids,
+                offset,
+            } => self.start_playables_playback(playable_ids, offset).await,
+            IoEvent::ToggleSaveEpisode { episode_id } => self.toggle_save_episode(episode_id).await,
+            IoEvent::ToggleSaveTrack { track_id } => self.toggle_save_track(track_id).await,
+            IoEvent::ToggleShuffle => self.toggle_shuffle().await,
+            IoEvent::TransferPlaybackToDevice { device_id } => {
+                self.transfer_playback_to_device(device_id).await
             }
-            IoEvent::CurrentUserSavedAlbumAdd { album_id } => {
-                self.current_user_saved_album_add(album_id).await
+            IoEvent::UpdateSearchLimits {
+                large_search_limit,
+                small_search_limit,
+            } => {
+                self.large_search_limit = large_search_limit;
+                self.small_search_limit = small_search_limit;
             }
             IoEvent::UserUnfollowArtists { artist_ids } => {
                 self.user_unfollow_artists(artist_ids).await
@@ -366,59 +402,17 @@ impl<'a> Network<'a> {
             IoEvent::UserUnfollowPlaylist { playlist_id } => {
                 self.user_unfollow_playlist(playlist_id).await
             }
-            IoEvent::MadeForYouSearchAndAdd {
-                search_term,
-                country,
-            } => self.made_for_you_search_and_add(search_term, country).await,
-            IoEvent::GetTrackAnalysis { track_id } => self.get_track_analysis(track_id).await,
-            IoEvent::ToggleSaveEpisode { episode_id } => self.toggle_save_episode(episode_id).await,
-            IoEvent::ToggleSaveTrack { track_id } => self.toggle_save_track(track_id).await,
-            IoEvent::GetRecommendationsForTrackId { track_id, country } => {
-                self.get_recommendations_for_track_id(track_id, country)
-                    .await
-            }
-            IoEvent::GetRecentlyPlayed => self.get_recently_played().await,
-            IoEvent::GetFollowedArtists { after } => self.get_followed_artists(after).await,
-            IoEvent::SetArtistsToTable { artists } => self.set_artists_to_table(artists).await,
             IoEvent::UserArtistFollowCheck { artist_ids } => {
-                self.user_artist_check_follow(artist_ids).await
+                self.user_artist_follow_check(artist_ids).await
             }
-            IoEvent::GetAlbum { album_id } => self.get_album(album_id).await,
-            IoEvent::TransferPlaybackToDevice { device_id } => {
-                self.transfert_playback_to_device(device_id).await
-            }
-            IoEvent::GetAlbumForTrack { track_id } => self.get_album_for_track(track_id).await,
-            IoEvent::ToggleShuffle => self.toggle_shuffle().await,
-            IoEvent::CurrentUserSavedTracksContains { track_ids } => {
-                self.current_user_saved_tracks_contains(track_ids).await
-            }
-            IoEvent::GetCurrentUserSavedShows { offset } => {
-                self.get_current_user_saved_shows(offset).await
-            }
-            IoEvent::CurrentUserSavedShowsContains { show_ids } => {
-                self.current_user_saved_shows_contains(show_ids).await
-            }
-            IoEvent::CurrentUserSavedShowDelete { show_id } => {
-                self.current_user_saved_shows_delete(show_id).await
-            }
-            IoEvent::CurrentUserSavedShowAdd { show_id } => {
-                self.current_user_saved_shows_add(show_id).await
-            }
-            IoEvent::GetShowEpisodes { show } => self.get_show_episodes(show).await,
-            IoEvent::GetShow { show_id } => self.get_show(show_id).await,
-            IoEvent::GetCurrentShowEpisodes { show_id, offset } => {
-                self.get_current_show_episodes(show_id, offset).await
-            }
-            IoEvent::AddItemToQueue { playable_id } => self.add_item_to_queue(playable_id).await,
-            IoEvent::ResumePlayback => self.resume_playback().await,
         };
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.is_loading = false;
     }
 
     async fn handle_error(&mut self, e: anyhow::Error) {
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.handle_error(e);
     }
 
@@ -433,13 +427,13 @@ impl<'a> Network<'a> {
 
     async fn get_user(&mut self) {
         let user = handle_error!(self, self.spotify.current_user().await);
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.user = Some(user);
     }
 
     async fn get_devices(&mut self) {
         let devices = handle_error!(self, self.spotify.device().await);
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.push_navigation_stack(RouteId::SelectedDevice, ActiveBlock::SelectDevice);
         if !devices.is_empty() {
             app.devices = Some(DevicePayload { devices });
@@ -459,7 +453,7 @@ impl<'a> Network<'a> {
                 .await
         );
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.instant_since_last_current_playback_poll = Instant::now();
 
         if let Some(context) = context {
@@ -468,21 +462,20 @@ impl<'a> Network<'a> {
                 match item {
                     PlayableItem::Track(track) => {
                         if let Some(track_id) = track.id {
-                            app.dispatch(IoEvent::CurrentUserSavedTracksContains(vec![
-                                track_id.to_string()
-                            ]));
+                            app.dispatch(IoEvent::CurrentUserSavedTracksContains {
+                                track_ids: vec![track_id],
+                            });
                         };
                     }
                     PlayableItem::Episode(episode) => {
-                        app.dispatch(IoEvent::CurrentUserSavedShowsContains(vec![episode
-                            .id
-                            .to_string()]));
+                        app.dispatch(IoEvent::CurrentUserSavedEpisodesContains {
+                            episode_ids: vec![episode.id],
+                        });
                     }
                 }
             }
         }
 
-        let mut app = self.app.lock().await;
         app.seek_ms.take();
         app.is_fetching_current_playback = false;
     }
@@ -495,7 +488,7 @@ impl<'a> Network<'a> {
                 .await
         );
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         for (i, track_id) in track_ids.into_iter().map(TrackId::into_static).enumerate() {
             if let Some(is_liked) = is_saved_vec.get(i) {
                 if *is_liked {
@@ -526,7 +519,7 @@ impl<'a> Network<'a> {
 
         self.set_playlist_items_to_table(&playlist_items).await;
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.playlist_items = Some(playlist_items);
         app.push_navigation_stack(RouteId::ItemTable, ActiveBlock::ItemTable);
     }
@@ -544,7 +537,7 @@ impl<'a> Network<'a> {
     }
 
     async fn set_items_to_table(&mut self, tracks: Vec<PlayableItem>) {
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
 
         // Send this event round (don't block here)
         app.dispatch(IoEvent::CurrentUserSavedTracksContains {
@@ -559,11 +552,11 @@ impl<'a> Network<'a> {
                 .collect(),
         });
 
-        app.item_table.items == tracks;
+        app.item_table.items = tracks;
     }
 
     async fn set_artists_to_table(&mut self, artists: Vec<FullArtist>) {
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.artists = artists;
     }
 
@@ -583,7 +576,7 @@ impl<'a> Network<'a> {
 
         self.set_playlist_items_to_table(&made_for_you_tracks).await;
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.made_for_you_playlist_items = Some(made_for_you_tracks);
         if app.get_current_route().id != RouteId::ItemTable {
             app.push_navigation_stack(RouteId::ItemTable, ActiveBlock::ItemTable);
@@ -600,7 +593,7 @@ impl<'a> Network<'a> {
 
         // not to show a blank page
         if !saved_shows.items.is_empty() {
-            let mut app = self.app.lock().await;
+            let mut app = self.app.write().await;
             app.library.saved_shows.add_pages(saved_shows);
         }
     }
@@ -611,7 +604,7 @@ impl<'a> Network<'a> {
             self.spotify.check_users_saved_shows(show_ids.clone()).await
         );
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         show_ids
             .into_iter()
             .map(ShowId::into_static)
@@ -621,6 +614,33 @@ impl<'a> Network<'a> {
                     app.saved_show_ids_set.insert(show_id);
                 } else {
                     app.saved_show_ids_set.remove(&show_id);
+                }
+            })
+    }
+
+    async fn current_user_saved_episodes_contains(&mut self, episode_ids: Vec<EpisodeId<'_>>) {
+        let ids = join_ids(episode_ids.clone());
+        let mut params = std::collections::HashMap::with_capacity(1);
+        params.insert("ids", &*ids);
+
+        let are_followed: Vec<bool> = handle_error!(
+            self,
+            self.spotify
+                .api_get("me/episodes/contains", &params)
+                .await
+                .and_then(|result| convert_result(&result))
+        );
+
+        let mut app = self.app.write().await;
+        episode_ids
+            .into_iter()
+            .map(EpisodeId::into_static)
+            .enumerate()
+            .for_each(|(i, episode_id)| {
+                if are_followed[i] {
+                    app.liked_episode_ids_set.insert(episode_id);
+                } else {
+                    app.liked_episode_ids_set.remove(&episode_id);
                 }
             })
     }
@@ -639,7 +659,7 @@ impl<'a> Network<'a> {
         );
 
         if !episodes.items.is_empty() {
-            let mut app = self.app.lock().await;
+            let mut app = self.app.write().await;
             app.library.show_episodes = ScrollableResultPages::default();
             app.library.show_episodes.add_pages(episodes);
 
@@ -654,7 +674,7 @@ impl<'a> Network<'a> {
     async fn get_show(&mut self, show_id: ShowId<'_>) {
         let show = handle_error!(self, self.spotify.get_a_show(show_id, None).await);
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
 
         app.selected_show_full = Some(SelectedFullShow { show });
 
@@ -671,7 +691,7 @@ impl<'a> Network<'a> {
         );
 
         if !episodes.items.is_empty() {
-            let mut app = self.app.lock().await;
+            let mut app = self.app.write().await;
             app.library.show_episodes.add_pages(episodes);
         }
     }
@@ -702,7 +722,7 @@ impl<'a> Network<'a> {
         // Run the futures concurrently
         let search_results = handle_error!(self, try_join_all(search_queries).await);
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
 
         for search_result in search_results {
             match search_result {
@@ -763,7 +783,7 @@ impl<'a> Network<'a> {
                 .await
         );
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.item_table.items = saved_tracks
             .items
             .clone()
@@ -802,7 +822,7 @@ impl<'a> Network<'a> {
                 .await
         );
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.song_progress_ms = 0;
         app.dispatch(IoEvent::GetCurrentPlayback);
     }
@@ -827,7 +847,7 @@ impl<'a> Network<'a> {
                 .await
         );
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.song_progress_ms = 0;
         app.dispatch(IoEvent::GetCurrentPlayback);
     }
@@ -871,7 +891,7 @@ impl<'a> Network<'a> {
     async fn toggle_shuffle(&mut self) {
         let shuffle_state = {
             self.app
-                .lock()
+                .read()
                 .await
                 .current_playback_context
                 .as_ref()
@@ -887,7 +907,7 @@ impl<'a> Network<'a> {
         );
         // Update the UI eagerly (otherwise the UI will wait until the next 5 second interval
         // due to polling playback context)
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         if let Some(current_playback_context) = &mut app.current_playback_context {
             current_playback_context.shuffle_state = !shuffle_state;
         };
@@ -905,7 +925,7 @@ impl<'a> Network<'a> {
                 .repeat(next_repeat_state, self.client_config.device_id.as_deref())
                 .await
         );
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         if let Some(current_playback_context) = &mut app.current_playback_context {
             current_playback_context.repeat_state = next_repeat_state;
         };
@@ -938,7 +958,7 @@ impl<'a> Network<'a> {
                 .volume(volume_percent, self.client_config.device_id.as_deref())
                 .await
         );
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         if let Some(current_playback_context) = &mut app.current_playback_context {
             current_playback_context.device.volume_percent = Some(volume_percent.into());
         };
@@ -977,16 +997,15 @@ impl<'a> Network<'a> {
             )
         );
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
 
-        app.dispatch(IoEvent::CurrentUserSavedAlbumsContains(
-            albums
+        app.dispatch(IoEvent::CurrentUserSavedAlbumsContains {
+            album_ids: albums
                 .items
                 .iter()
-                .filter_map(|item| item.id.as_ref())
-                .map(|id| id.to_string())
+                .filter_map(|item| item.id.clone())
                 .collect(),
-        ));
+        });
 
         app.artist = Some(Artist {
             artist_name,
@@ -1017,11 +1036,10 @@ impl<'a> Network<'a> {
         let track_ids = tracks
             .items
             .iter()
-            .filter_map(|item| item.id.as_ref())
-            .map(|id| id.to_string())
+            .filter_map(|item| item.id.clone())
             .collect::<Vec<_>>();
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.selected_album_simplified = Some(SelectedAlbum {
             album: *album,
             tracks,
@@ -1030,7 +1048,7 @@ impl<'a> Network<'a> {
 
         app.album_table_context = AlbumTableContext::Simplified;
         app.push_navigation_stack(RouteId::AlbumTracks, ActiveBlock::AlbumTracks);
-        app.dispatch(IoEvent::CurrentUserSavedTracksContains(track_ids));
+        app.dispatch(IoEvent::CurrentUserSavedTracksContains { track_ids });
     }
 
     async fn get_recommendations_for_seed(
@@ -1077,7 +1095,7 @@ impl<'a> Network<'a> {
                 .map(|id| id.into_static())
                 .collect::<Vec<_>>();
 
-            let mut app = self.app.lock().await;
+            let mut app = self.app.write().await;
             app.recommended_tracks = recommended_tracks;
             app.item_table.context = Some(ItemTableContext::RecommendedTracks);
 
@@ -1136,7 +1154,7 @@ impl<'a> Network<'a> {
         //                 .current_user_saved_episodes_delete([episode_id.clone()])
         //                 .await
         //         );
-        //         let mut app = self.app.lock().await;
+        //         let mut app = self.app.write().await;
         //         app.liked_song_ids_set.remove(&episode_id.into_static());
         //     }
         //     false => {
@@ -1147,7 +1165,7 @@ impl<'a> Network<'a> {
         //                 .await
         //         );
         //         // TODO: This should ideally use the same logic as `self.current_user_saved_episodes_contains`
-        //         let mut app = self.app.lock().await;
+        //         let mut app = self.app.write().await;
         //         app.liked_song_ids_set.insert(episode_id.into_static());
         //     }
         // }
@@ -1168,7 +1186,7 @@ impl<'a> Network<'a> {
                         .current_user_saved_tracks_delete([track_id.clone()])
                         .await
                 );
-                let mut app = self.app.lock().await;
+                let mut app = self.app.write().await;
                 app.liked_song_ids_set.remove(&track_id.into_static());
             }
             false => {
@@ -1179,7 +1197,7 @@ impl<'a> Network<'a> {
                         .await
                 );
                 // TODO: This should ideally use the same logic as `self.current_user_saved_tracks_contains`
-                let mut app = self.app.lock().await;
+                let mut app = self.app.write().await;
                 app.liked_song_ids_set.insert(track_id.into_static());
             }
         }
@@ -1193,12 +1211,12 @@ impl<'a> Network<'a> {
                 .current_user_followed_artists(after.as_deref(), Some(self.large_search_limit))
                 .await
         );
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.artists = saved_artists.items.to_owned();
         app.library.saved_artists.add_pages(saved_artists);
     }
 
-    async fn user_artist_check_follow(&mut self, artist_ids: Vec<ArtistId<'_>>) {
+    async fn user_artist_follow_check(&mut self, artist_ids: Vec<ArtistId<'_>>) {
         let are_followed = handle_error!(
             self,
             self.spotify
@@ -1206,7 +1224,7 @@ impl<'a> Network<'a> {
                 .await
         );
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         artist_ids
             .into_iter()
             .map(ArtistId::into_static)
@@ -1229,7 +1247,7 @@ impl<'a> Network<'a> {
         );
         // not to show a blank page
         if !saved_albums.items.is_empty() {
-            let mut app = self.app.lock().await;
+            let mut app = self.app.write().await;
             app.library.saved_albums.add_pages(saved_albums);
         }
     }
@@ -1241,7 +1259,7 @@ impl<'a> Network<'a> {
                 .current_user_saved_albums_contains(album_ids.clone())
                 .await
         );
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         album_ids
             .into_iter()
             .map(AlbumId::into_static)
@@ -1263,7 +1281,7 @@ impl<'a> Network<'a> {
                 .await
         );
         self.get_current_user_saved_albums(None).await;
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.saved_album_ids_set.remove(&album_id.into_static());
     }
 
@@ -1274,7 +1292,7 @@ impl<'a> Network<'a> {
                 .current_user_saved_albums_add([album_id.clone()])
                 .await
         );
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.saved_album_ids_set.insert(album_id.into_static());
     }
 
@@ -1286,14 +1304,14 @@ impl<'a> Network<'a> {
                 .await
         );
         self.get_current_user_saved_shows(None).await;
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.saved_show_ids_set.remove(&show_id.into_static());
     }
 
     async fn current_user_saved_shows_add(&mut self, show_id: ShowId<'_>) {
         handle_error!(self, self.spotify.save_shows(vec![show_id.clone()]).await);
         self.get_current_user_saved_shows(None).await;
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.saved_show_ids_set.insert(show_id.into_static());
     }
 
@@ -1303,7 +1321,7 @@ impl<'a> Network<'a> {
             self.spotify.user_unfollow_artists(artist_ids.clone()).await
         );
         self.get_followed_artists(None).await;
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         artist_ids
             .into_iter()
             .map(ArtistId::into_static)
@@ -1318,7 +1336,7 @@ impl<'a> Network<'a> {
             self.spotify.user_follow_artists(artist_ids.clone()).await
         );
         self.get_followed_artists(None).await;
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         artist_ids
             .into_iter()
             .map(ArtistId::into_static)
@@ -1345,7 +1363,10 @@ impl<'a> Network<'a> {
         search_string: String,
         country: Option<Country>,
     ) {
-        static SPOTIFY_ID: UserId<'static> = UserId::from_id("spotify").unwrap();
+        use ::std::sync::OnceLock;
+        static SPOTIFY_ID: OnceLock<UserId<'static>> = OnceLock::new();
+
+        let spotify_id = SPOTIFY_ID.get_or_init(|| UserId::from_id("spotify").unwrap());
 
         let SearchResult::Playlists(mut search_playlists) = handle_error!(
             self,
@@ -1366,11 +1387,11 @@ impl<'a> Network<'a> {
         let mut filtered_playlists = search_playlists
             .items
             .iter()
-            .filter(|playlist| playlist.owner.id == SPOTIFY_ID && playlist.name == search_string)
+            .filter(|playlist| playlist.owner.id == *spotify_id && playlist.name == search_string)
             .map(|playlist| playlist.to_owned())
             .collect::<Vec<SimplifiedPlaylist>>();
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         if !app.library.made_for_you_playlists.pages.is_empty() {
             app.library
                 .made_for_you_playlists
@@ -1388,7 +1409,7 @@ impl<'a> Network<'a> {
 
     async fn get_track_analysis(&mut self, track_id: TrackId<'_>) {
         let result = handle_error!(self, self.spotify.track_analysis(track_id).await);
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.audio_analysis = Some(result);
     }
 
@@ -1400,7 +1421,7 @@ impl<'a> Network<'a> {
                 .await
         );
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.playlists = Some(playlists);
         // Select the first playlist
         app.selected_playlist_index = Some(0);
@@ -1422,7 +1443,7 @@ impl<'a> Network<'a> {
 
         self.current_user_saved_tracks_contains(track_ids).await;
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
 
         app.recently_played.result = Some(result.clone());
     }
@@ -1430,7 +1451,7 @@ impl<'a> Network<'a> {
     async fn get_album(&mut self, album_id: AlbumId<'_>) {
         let album = handle_error!(self, self.spotify.album(album_id, None).await);
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
 
         app.selected_album_full = Some(SelectedFullAlbum {
             album,
@@ -1459,7 +1480,7 @@ impl<'a> Network<'a> {
             selected_index: zero_indexed_track_number as usize,
         };
 
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
 
         app.selected_album_full = Some(selected_album.clone());
         app.saved_album_tracks_index = selected_album.selected_index;
@@ -1467,7 +1488,7 @@ impl<'a> Network<'a> {
         app.push_navigation_stack(RouteId::AlbumTracks, ActiveBlock::AlbumTracks);
     }
 
-    async fn transfert_playback_to_device(&mut self, device_id: String) {
+    async fn transfer_playback_to_device(&mut self, device_id: String) {
         handle_error!(
             self,
             self.spotify.transfer_playback(&device_id, Some(true)).await
@@ -1475,16 +1496,14 @@ impl<'a> Network<'a> {
         self.get_current_playback().await;
 
         handle_error!(self, self.client_config.set_device_id(device_id));
-        let mut app = self.app.lock().await;
+        let mut app = self.app.write().await;
         app.pop_navigation_stack();
     }
 
     async fn refresh_authentication(&mut self) {
-        if let Some(new_token) = get_token(&mut self.oauth).await {
-            let (new_spotify, new_token_expiry) = get_spotify(new_token);
-            self.spotify = new_spotify;
-            let mut app = self.app.lock().await;
-            app.spotify_token_expiry = new_token_expiry;
+        if let Some(new_token) = crate::get_token_auto(&mut self.spotify).await {
+            let mut app = self.app.write().await;
+            app.spotify_token_expiry = new_token.expires_at.unwrap_or(Utc::now());
         } else {
             println!("\nFailed to refresh authentication token");
             // TODO panic!

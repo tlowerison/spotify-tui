@@ -13,7 +13,6 @@ pub enum Type {
     Album,
     Artist,
     Device,
-    Episode,
     Liked,
     Playlist,
     Show,
@@ -143,6 +142,7 @@ pub enum FormatType {
     Playlist(Box<SimplifiedPlaylist>),
     Track(Box<FullTrack>),
     Episode(Box<FullEpisode>),
+    // SimplifiedEpisode(Box<SimplifiedEpisode>),
     Show(Box<SimplifiedShow>),
 }
 
@@ -215,6 +215,9 @@ impl Format {
                     Self::Track(e.name),
                 ],
             ),
+            // FormatType::SimplifiedEpisode(e) => {
+            //     Self::try_append_uri(Some(e.id), vec![Self::Track(e.name)])
+            // }
         }
     }
 

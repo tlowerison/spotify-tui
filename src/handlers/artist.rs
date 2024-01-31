@@ -322,9 +322,8 @@ pub fn handler(key: Key, app: &mut App) {
                     .get(artist.selected_top_track_index)
                     .and_then(|track| track.id.as_ref())
                 {
-                    app.dispatch(IoEvent::AddItemToQueue {
-                        playable_id: track_id.clone().into(),
-                    });
+                    let playable_id = track_id.clone().into();
+                    app.dispatch(IoEvent::AddItemToQueue { playable_id });
                 }
             }
             _ => (),

@@ -75,7 +75,7 @@ fn on_enter(app: &mut App) {
         let playable_ids = episodes
             .items
             .iter()
-            .map(|episode| episode.id)
+            .map(|episode| episode.id.clone())
             .map(PlayableId::Episode)
             .collect::<Vec<_>>();
         app.dispatch(IoEvent::StartPlayablesPlayback {

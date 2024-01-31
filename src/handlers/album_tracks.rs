@@ -64,7 +64,7 @@ pub fn handler(key: Key, app: &mut App) {
             }
             AlbumTableContext::Simplified => {
                 if let Some(selected_album_simplified) = &app.selected_album_simplified.clone() {
-                    if let Some(album_id) = selected_album_simplified.album.id {
+                    if let Some(album_id) = selected_album_simplified.album.id.clone() {
                         app.dispatch(IoEvent::StartContextPlayback {
                             play_context_id: album_id.into(),
                             offset: Some(selected_album_simplified.selected_index as u32),

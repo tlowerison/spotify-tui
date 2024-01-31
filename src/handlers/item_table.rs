@@ -6,7 +6,7 @@ use crate::event::Key;
 use crate::network::IoEvent;
 use rand::{thread_rng, Rng};
 use rspotify::model::{idtypes::*, PlayableItem};
-use serde_json::from_value;
+use spotify_tui_util::ToStatic;
 
 pub fn handler(key: Key, app: &mut App) {
     match key {
@@ -82,7 +82,7 @@ pub fn handler(key: Key, app: &mut App) {
                             .items
                             .get(selected_playlist_index.to_owned())
                         {
-                            if let Some(playlist_tracks) = &app.made_for_you_tracks {
+                            if let Some(playlist_tracks) = &app.made_for_you_playlist_items {
                                 if app.made_for_you_offset + app.large_search_limit
                                     < playlist_tracks.total
                                 {
@@ -170,29 +170,20 @@ fn play_random_song(app: &mut App) {
     if let Some(context) = &app.item_table.context {
         match context {
             ItemTableContext::MyPlaylists => {
-                let (play_context_id, track_json) =
-                    match (&app.selected_playlist_index, &app.playlists) {
-                        (Some(selected_playlist_index), Some(playlists)) => {
-                            if let Some(selected_playlist) =
-                                playlists.items.get(selected_playlist_index.to_owned())
-                            {
-                                (
-                                    Some(PlayContextId::Playlist(selected_playlist.id)),
-                                    selected_playlist.tracks.get("total"),
-                                )
-                            } else {
-                                (None, None)
-                            }
-                        }
-                        _ => (None, None),
-                    };
-
-                if let Some(val) = track_json {
-                    let num_tracks: usize = from_value(val.clone()).unwrap();
-                    app.dispatch(IoEvent::StartContextPlayback {
-                        play_context_id,
-                        offset: Some(thread_rng().gen_range(0..num_tracks) as u32),
-                    });
+                if let (Some(selected_playlist_index), Some(playlists)) =
+                    (&app.selected_playlist_index, &app.playlists)
+                {
+                    if let Some(selected_playlist) =
+                        playlists.items.get(selected_playlist_index.to_owned())
+                    {
+                        let play_context_id = PlayContextId::Playlist(selected_playlist.id.clone());
+                        app.dispatch(IoEvent::StartContextPlayback {
+                            play_context_id,
+                            offset: Some(
+                                thread_rng().gen_range(0..selected_playlist.tracks.total) as u32
+                            ),
+                        });
+                    }
                 }
             }
             ItemTableContext::RecommendedTracks => {}
@@ -201,7 +192,7 @@ fn play_random_song(app: &mut App) {
                     let playable_ids = saved_tracks
                         .items
                         .iter()
-                        .filter_map(|item| item.track.id)
+                        .filter_map(|item| item.track.id.clone())
                         .map(PlayableId::Track)
                         .collect::<Vec<_>>();
                     let rand_idx = thread_rng().gen_range(0..playable_ids.len());
@@ -213,32 +204,23 @@ fn play_random_song(app: &mut App) {
             }
             ItemTableContext::AlbumSearch => {}
             ItemTableContext::PlaylistSearch => {
-                let (play_context_id, playlist_track_json) = match (
+                if let (Some(selected_playlist_index), Some(playlist_result)) = (
                     &app.search_results.selected_playlists_index,
                     &app.search_results.playlists,
                 ) {
-                    (Some(selected_playlist_index), Some(playlist_result)) => {
-                        if let Some(selected_playlist) = playlist_result
-                            .items
-                            .get(selected_playlist_index.to_owned())
-                        {
-                            (
-                                Some(PlayContextId::Playlist(selected_playlist.id)),
-                                selected_playlist.tracks.get("total"),
-                            )
-                        } else {
-                            (None, None)
-                        }
+                    if let Some(selected_playlist) = playlist_result
+                        .items
+                        .get(selected_playlist_index.to_owned())
+                    {
+                        let play_context_id = PlayContextId::Playlist(selected_playlist.id.clone());
+                        app.dispatch(IoEvent::StartContextPlayback {
+                            play_context_id,
+                            offset: Some(
+                                thread_rng().gen_range(0..selected_playlist.tracks.total) as u32
+                            ),
+                        });
                     }
-                    _ => (None, None),
                 };
-                if let Some(val) = playlist_track_json {
-                    let num_tracks: usize = from_value(val.clone()).unwrap();
-                    app.dispatch(IoEvent::StartContextPlayback {
-                        play_context_id,
-                        offset: Some(thread_rng().gen_range(0..num_tracks) as u32),
-                    })
-                }
             }
             ItemTableContext::MadeForYou => {
                 if let Some(playlist) = &app
@@ -247,17 +229,11 @@ fn play_random_song(app: &mut App) {
                     .get_results(Some(0))
                     .and_then(|playlist| playlist.items.get(app.made_for_you_index))
                 {
-                    if let Some(num_tracks) = &playlist
-                        .tracks
-                        .get("total")
-                        .and_then(|total| -> Option<usize> { from_value(total.clone()).ok() })
-                    {
-                        let play_context_id = PlayContextId::Playlist(playlist.id);
-                        app.dispatch(IoEvent::StartContextPlayback {
-                            play_context_id,
-                            offset: Some(thread_rng().gen_range(0..*num_tracks)),
-                        })
-                    };
+                    let play_context_id = PlayContextId::Playlist(playlist.id.clone());
+                    app.dispatch(IoEvent::StartContextPlayback {
+                        play_context_id,
+                        offset: Some(thread_rng().gen_range(0..playlist.tracks.total)),
+                    })
                 };
             }
         }
@@ -266,16 +242,16 @@ fn play_random_song(app: &mut App) {
 
 fn handle_save_track_event(app: &mut App) {
     let selected_index = app.item_table.selected_index;
-    let items = &app.item_table.items;
-    if let Some(item) = items.get(selected_index) {
-        if let Some(id) = item.id() {
-            let track_id = match id {
-                PlayableId::Track(id) => id,
-                _ => return,
-            };
-            app.dispatch(IoEvent::ToggleSaveTrack { track_id });
+    let track_id = {
+        let Some(item) = app.item_table.items.get(selected_index) else {
+            return;
         };
+        let Some(PlayableId::Track(track_id)) = item.id() else {
+            return;
+        };
+        track_id.into_static()
     };
+    app.dispatch(IoEvent::ToggleSaveTrack { track_id });
 }
 
 fn handle_recommended_tracks(app: &mut App) {
@@ -306,17 +282,12 @@ fn jump_to_end(app: &mut App) {
                     if let Some(selected_playlist) =
                         playlists.items.get(selected_playlist_index.to_owned())
                     {
-                        let total_tracks = selected_playlist
-                            .tracks
-                            .get("total")
-                            .and_then(|total| total.as_u64())
-                            .expect("playlist.tracks object should have a total field")
-                            as u32;
+                        let total_tracks = selected_playlist.tracks.total;
 
                         if app.large_search_limit < total_tracks {
                             app.playlist_offset =
                                 total_tracks - (total_tracks % app.large_search_limit);
-                            let playlist_id = selected_playlist.id;
+                            let playlist_id = selected_playlist.id.clone();
                             app.dispatch(IoEvent::GetPlaylistItems {
                                 playlist_id,
                                 offset: app.playlist_offset,
@@ -349,7 +320,9 @@ fn on_enter(app: &mut App) {
                         (Some(active_playlist_index), Some(playlists)) => playlists
                             .items
                             .get(active_playlist_index.to_owned())
-                            .map(|selected_playlist| PlayContextId::Playlist(selected_playlist.id)),
+                            .map(|selected_playlist| {
+                                PlayContextId::Playlist(selected_playlist.id.clone())
+                            }),
                         _ => None,
                     };
                     if let Some(play_context_id) = play_context_id {
@@ -403,7 +376,9 @@ fn on_enter(app: &mut App) {
                         (Some(selected_playlist_index), Some(playlist_result)) => playlist_result
                             .items
                             .get(selected_playlist_index.to_owned())
-                            .map(|selected_playlist| PlayContextId::Playlist(selected_playlist.id)),
+                            .map(|selected_playlist| {
+                                PlayContextId::Playlist(selected_playlist.id.clone())
+                            }),
                         _ => None,
                     };
                     if let Some(play_context_id) = play_context_id {
@@ -424,7 +399,8 @@ fn on_enter(app: &mut App) {
                             .items
                             .get(app.made_for_you_index)
                             .unwrap()
-                            .id,
+                            .id
+                            .clone(),
                     );
 
                     app.dispatch(IoEvent::StartContextPlayback {
@@ -451,7 +427,7 @@ fn on_queue(app: &mut App) {
             ItemTableContext::MyPlaylists => {
                 if let Some(playable_id) = items
                     .get(*selected_index)
-                    .and_then(|playable_item| playable_item.clone().id())
+                    .and_then(|playable_item| playable_item.id().to_static())
                 {
                     app.dispatch(IoEvent::AddItemToQueue { playable_id });
                 };
@@ -485,7 +461,7 @@ fn on_queue(app: &mut App) {
                 } = &app.item_table;
                 if let Some(playable_id) = items
                     .get(*selected_index)
-                    .and_then(|playable_item| playable_item.clone().id())
+                    .and_then(|playable_item| playable_item.id().to_static())
                 {
                     app.dispatch(IoEvent::AddItemToQueue { playable_id });
                 };
@@ -493,7 +469,7 @@ fn on_queue(app: &mut App) {
             ItemTableContext::MadeForYou => {
                 if let Some(playable_id) = items
                     .get(*selected_index)
-                    .and_then(|playable_item| playable_item.clone().id())
+                    .and_then(|playable_item| playable_item.id().to_static())
                 {
                     app.dispatch(IoEvent::AddItemToQueue { playable_id });
                 }

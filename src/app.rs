@@ -1,8 +1,8 @@
 use super::user_config::UserConfig;
 use crate::network::IoEvent;
-use crate::util::PlaybleItemExt;
 use anyhow::anyhow;
 use arboard::Clipboard;
+use chrono::{DateTime, Utc};
 use derivative::Derivative;
 use rspotify::model::{
     album::{FullAlbum, SavedAlbum, SimplifiedAlbum},
@@ -20,12 +20,13 @@ use rspotify::model::{
     user::PrivateUser,
     AlbumId, ArtistId, EpisodeId, PlayableItem, ShowId, TrackId,
 };
-use std::sync::mpsc::Sender;
+use spotify_tui_util::{PlaybleItemExt, ToStatic};
 use std::{
     cmp::{max, min},
     collections::HashSet,
-    time::{Instant, SystemTime},
+    time::Instant,
 };
+use tokio::sync::mpsc::UnboundedSender;
 use tui::layout::Rect;
 
 pub const LIBRARY_OPTIONS: [&str; 6] = [
@@ -328,10 +329,10 @@ pub struct App {
     pub help_menu_max_lines: u32,
     pub help_menu_offset: u32,
     pub is_loading: bool,
-    io_tx: Option<Sender<IoEvent<'static>>>,
+    io_tx: Option<UnboundedSender<IoEvent<'static>>>,
     pub is_fetching_current_playback: bool,
-    #[derivative(Default(value = "SystemTime::now()"))]
-    pub spotify_token_expiry: SystemTime,
+    #[derivative(Default(value = "Utc::now()"))]
+    pub spotify_token_expiry: DateTime<Utc>,
     pub dialog: Option<String>,
     pub confirm: bool,
 }
@@ -356,9 +357,9 @@ macro_rules! handle_error {
 
 impl App {
     pub fn new(
-        io_tx: Sender<IoEvent<'static>>,
+        io_tx: UnboundedSender<IoEvent<'static>>,
         user_config: UserConfig,
-        spotify_token_expiry: SystemTime,
+        spotify_token_expiry: DateTime<Utc>,
     ) -> App {
         App {
             io_tx: Some(io_tx),
@@ -369,13 +370,13 @@ impl App {
     }
 
     // Send a network event to the network thread
-    pub fn dispatch(&mut self, action: IoEvent<'_>) {
+    pub fn dispatch(&mut self, event: IoEvent<'_>) {
         // `is_loading` will be set to false again after the async action has finished in network.rs
         self.is_loading = true;
         if let Some(io_tx) = &self.io_tx {
-            if let Err(e) = io_tx.send(action) {
+            if let Err(err) = io_tx.send(event.to_static()) {
                 self.is_loading = false;
-                println!("Error from dispatch {}", e);
+                println!("Error from dispatch: {err}");
                 // TODO: handle error
             };
         }
@@ -596,7 +597,7 @@ impl App {
         active_block: Option<ActiveBlock>,
         hovered_block: Option<ActiveBlock>,
     ) {
-        let mut current_route = self.get_current_route_mut();
+        let current_route = self.get_current_route_mut();
         if let Some(active_block) = active_block {
             current_route.active_block = active_block;
         }
@@ -631,8 +632,8 @@ impl App {
         };
 
         let play_context_id = match item {
-            PlayableItem::Track(track) => track.album.id.map(PlayContextId::from),
-            PlayableItem::Episode(episode) => Some(PlayContextId::from(episode.show.id)),
+            PlayableItem::Track(track) => track.album.id.clone().map(PlayContextId::from),
+            PlayableItem::Episode(episode) => Some(PlayContextId::from(episode.show.id.clone())),
         };
         let Some(play_context_id) = play_context_id else {
             return;
@@ -677,7 +678,7 @@ impl App {
                 if let Some(saved_artists) = &self.library.saved_artists.clone().get_results(None) {
                     if let Some(last_artist) = saved_artists.items.last() {
                         self.dispatch(IoEvent::GetFollowedArtists {
-                            after: Some(last_artist.id),
+                            after: Some(last_artist.id.clone()),
                         });
                     }
                 }
@@ -710,7 +711,7 @@ impl App {
             None => {
                 if let Some(saved_tracks) = &self.library.saved_tracks.get_results(None) {
                     let offset = Some(saved_tracks.offset + saved_tracks.limit);
-                    self.dispatch(IoEvent::GetCurrentSavedTracks { offset });
+                    self.dispatch(IoEvent::GetCurrentUserSavedTracks { offset });
                 }
             }
         }
@@ -943,7 +944,7 @@ impl App {
     }
 
     pub fn user_unfollow_playlist(&mut self) {
-        if let (Some(playlists), Some(selected_index), Some(user)) =
+        if let (Some(playlists), Some(selected_index), Some(_)) =
             (&self.playlists, self.selected_playlist_index, &self.user)
         {
             let selected_playlist = &playlists.items[selected_index];
@@ -953,7 +954,7 @@ impl App {
     }
 
     pub fn user_unfollow_playlist_search_result(&mut self) {
-        if let (Some(playlists), Some(selected_index), Some(user)) = (
+        if let (Some(playlists), Some(selected_index), Some(_)) = (
             &self.search_results.playlists,
             self.search_results.selected_playlists_index,
             &self.user,

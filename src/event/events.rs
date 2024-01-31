@@ -1,6 +1,9 @@
 use crate::event::Key;
-use crossterm::event;
-use std::{sync::mpsc, thread, time::Duration};
+use anyhow::Error;
+use crossterm::event::{self, EventStream};
+use futures_util::{FutureExt, StreamExt};
+use std::time::Duration;
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Copy)]
 /// Configuration for event handling.
@@ -31,9 +34,10 @@ pub enum Event<I> {
 /// A small event handler that wrap crossterm input and tick event. Each event
 /// type is handled in its own thread and returned to a common `Receiver`
 pub struct Events {
-    rx: mpsc::Receiver<Event<Key>>,
+    rx: mpsc::UnboundedReceiver<Event<Key>>,
     // Need to be kept around to prevent disposing the sender side.
-    _tx: mpsc::Sender<Event<Key>>,
+    #[allow(dead_code)]
+    tx: mpsc::UnboundedSender<Event<Key>>,
 }
 
 impl Events {
@@ -47,30 +51,34 @@ impl Events {
 
     /// Constructs an new instance of `Events` from given config.
     pub fn with_config(config: EventConfig) -> Events {
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::unbounded_channel();
 
         let event_tx = tx.clone();
-        thread::spawn(move || {
+        tokio::spawn(async move {
+            let mut reader = EventStream::new();
             loop {
-                // poll for tick rate duration, if no event, sent tick event.
-                if event::poll(config.tick_rate).unwrap() {
-                    if let event::Event::Key(key) = event::read().unwrap() {
-                        let key = Key::from(key);
-
-                        event_tx.send(Event::Input(key)).unwrap();
+                let result = tokio::select! {
+                    _ = tokio::time::sleep(config.tick_rate).fuse() => event_tx.send(Event::Tick).map_err(Error::msg),
+                    event = reader.next().fuse() => {
+                        match event {
+                            Some(Ok(event::Event::Key(key))) => event_tx.send(Event::Input(Key::from(key))).map_err(Error::msg),
+                            Some(res) => res.map(|_| ()).map_err(Error::msg),
+                            None => break,
+                        }
                     }
+                };
+                if let Err(err) = result {
+                    eprintln!("Error: {err}");
                 }
-
-                event_tx.send(Event::Tick).unwrap();
             }
         });
 
-        Events { rx, _tx: tx }
+        Events { rx, tx }
     }
 
     /// Attempts to read an event.
     /// This function will block the current thread.
-    pub fn next(&self) -> Result<Event<Key>, mpsc::RecvError> {
-        self.rx.recv()
+    pub async fn next(&mut self) -> Option<Event<Key>> {
+        self.rx.recv().await
     }
 }

@@ -1,6 +1,7 @@
 pub mod audio_analysis;
 pub mod help;
 pub mod util;
+
 use super::{
     app::{
         ActiveBlock, AlbumTableContext, App, ArtistBlock, EpisodeTableContext,
@@ -9,7 +10,8 @@ use super::{
     banner::BANNER,
 };
 use help::get_help_docs;
-use rspotify::model::{enums::RepeatState, show::ResumePoint, PlayableItem};
+use rspotify::model::{enums::RepeatState, show::ResumePoint, PlayableId, PlayableItem};
+use spotify_tui_util::{PlayableIdExt, PlaybleItemExt};
 use tui::{
     backend::Backend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -384,16 +386,12 @@ where
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
             .split(chunks[0]);
 
-        let currently_playing_id = app
-            .current_playback_context
-            .clone()
-            .and_then(|context| {
-                context.item.and_then(|item| match item {
-                    PlayableItem::Track(track) => track.id,
-                    PlayableItem::Episode(episode) => Some(episode.id),
-                })
+        let currently_playing_id = app.current_playback_context.clone().and_then(|context| {
+            context.item.and_then(|item| match item {
+                PlayableItem::Track(track) => track.id.map(PlayableId::Track),
+                PlayableItem::Episode(episode) => Some(PlayableId::Episode(episode.id)),
             })
-            .unwrap_or_else(|| "".to_string());
+        });
 
         let songs = match &app.search_results.tracks {
             Some(tracks) => tracks
@@ -401,12 +399,19 @@ where
                 .iter()
                 .map(|item| {
                     let mut song_name = "".to_string();
-                    let id = item.clone().id.unwrap_or_else(|| "".to_string());
-                    if currently_playing_id == id {
-                        song_name += "▶ "
-                    }
-                    if app.liked_song_ids_set.contains(&id) {
-                        song_name += &app.user_config.padded_liked_icon();
+
+                    if let Some(id) = item.id.clone() {
+                        match currently_playing_id.as_ref() {
+                            Some(currently_playing_id)
+                                if currently_playing_id.equals(&PlayableId::Track(id.clone())) =>
+                            {
+                                song_name += "▶ ";
+                            }
+                            _ => {}
+                        };
+                        if app.liked_song_ids_set.contains(&id) {
+                            song_name += &app.user_config.padded_liked_icon();
+                        }
                     }
 
                     song_name += &item.name;
@@ -573,7 +578,7 @@ where
         .artists
         .iter()
         .map(|item| TableItem {
-            id: item.id.clone(),
+            id: item.id.to_string(),
             format: vec![item.name.to_owned()],
         })
         .collect::<Vec<TableItem>>();
@@ -621,7 +626,7 @@ where
             .items
             .iter()
             .map(|show_page| TableItem {
-                id: show_page.show.id.to_owned(),
+                id: show_page.show.id.to_string(),
                 format: vec![
                     show_page.show.name.to_owned(),
                     show_page.show.publisher.to_owned(),
@@ -692,13 +697,17 @@ where
                         .items
                         .iter()
                         .map(|item| TableItem {
-                            id: item.id.clone().unwrap_or_else(|| "".to_string()),
+                            id: item
+                                .id
+                                .clone()
+                                .map(|x| x.to_string())
+                                .unwrap_or_else(|| "".to_string()),
                             format: vec![
                                 "".to_string(),
                                 item.track_number.to_string(),
                                 item.name.to_owned(),
                                 create_artist_string(&item.artists),
-                                millis_to_minutes(u128::from(item.duration_ms)),
+                                millis_to_minutes(item.duration.num_milliseconds() as u128),
                             ],
                         })
                         .collect::<Vec<TableItem>>(),
@@ -718,13 +727,17 @@ where
                     .items
                     .iter()
                     .map(|item| TableItem {
-                        id: item.id.clone().unwrap_or_else(|| "".to_string()),
+                        id: item
+                            .id
+                            .clone()
+                            .map(|x| x.to_string())
+                            .unwrap_or_else(|| "".to_string()),
                         format: vec![
                             "".to_string(),
                             item.track_number.to_string(),
                             item.name.to_owned(),
                             create_artist_string(&item.artists),
-                            millis_to_minutes(u128::from(item.duration_ms)),
+                            millis_to_minutes(item.duration.num_milliseconds() as u128),
                         ],
                     })
                     .collect::<Vec<TableItem>>(),
@@ -795,17 +808,29 @@ where
 
     let items = app
         .item_table
-        .tracks
+        .items
         .iter()
         .map(|item| TableItem {
-            id: item.id.clone().unwrap_or_else(|| "".to_string()),
-            format: vec![
-                "".to_string(),
-                item.name.to_owned(),
-                create_artist_string(&item.artists),
-                item.album.name.to_owned(),
-                millis_to_minutes(u128::from(item.duration_ms)),
-            ],
+            id: item
+                .id()
+                .map(|x| x.to_string())
+                .unwrap_or_else(|| "".to_string()),
+            format: match item {
+                PlayableItem::Track(track) => vec![
+                    "".to_string(),
+                    item.name().to_owned(),
+                    create_artist_string(&track.artists),
+                    track.album.name.to_owned(),
+                    millis_to_minutes(item.duration().num_milliseconds() as u128),
+                ],
+                PlayableItem::Episode(episode) => vec![
+                    "".to_string(),
+                    item.name().to_owned(),
+                    episode.show.publisher.to_string(),
+                    episode.show.name.to_owned(),
+                    millis_to_minutes(item.duration().num_milliseconds() as u128),
+                ],
+            },
         })
         .collect::<Vec<TableItem>>();
     // match RecommendedContext
@@ -874,17 +899,29 @@ where
 
     let items = app
         .item_table
-        .tracks
+        .items
         .iter()
         .map(|item| TableItem {
-            id: item.id.clone().unwrap_or_else(|| "".to_string()),
-            format: vec![
-                "".to_string(),
-                item.name.to_owned(),
-                create_artist_string(&item.artists),
-                item.album.name.to_owned(),
-                millis_to_minutes(u128::from(item.duration_ms)),
-            ],
+            id: item
+                .id()
+                .map(|x| x.to_string())
+                .unwrap_or_else(|| "".to_string()),
+            format: match item {
+                PlayableItem::Episode(episode) => vec![
+                    "".to_string(),
+                    item.name().to_owned(),
+                    episode.show.publisher.to_string(),
+                    episode.show.name.to_owned(),
+                    millis_to_minutes(item.duration().num_milliseconds() as u128),
+                ],
+                PlayableItem::Track(track) => vec![
+                    "".to_string(),
+                    item.name().to_owned(),
+                    create_artist_string(&track.artists),
+                    track.album.name.to_owned(),
+                    millis_to_minutes(item.duration().num_milliseconds() as u128),
+                ],
+            },
         })
         .collect::<Vec<TableItem>>();
 
@@ -967,7 +1004,10 @@ where
                 current_playback_context.device.name,
                 shuffle_text,
                 repeat_text,
-                current_playback_context.device.volume_percent
+                current_playback_context
+                    .device
+                    .volume_percent
+                    .unwrap_or_default()
             );
 
             let current_route = app.get_current_route();
@@ -988,21 +1028,25 @@ where
 
             let (item_id, name, duration_ms) = match track_item {
                 PlayableItem::Track(track) => (
-                    track.id.to_owned().unwrap_or_else(|| "".to_string()),
+                    track.id.clone().map(PlayableId::Track),
                     track.name.to_owned(),
-                    track.duration_ms,
+                    track.duration.num_milliseconds(),
                 ),
                 PlayableItem::Episode(episode) => (
-                    episode.id.to_owned(),
+                    Some(PlayableId::Episode(episode.id.clone())),
                     episode.name.to_owned(),
-                    episode.duration_ms,
+                    episode.duration.num_milliseconds(),
                 ),
             };
 
-            let track_name = if app.liked_song_ids_set.contains(&item_id) {
-                format!("{}{}", &app.user_config.padded_liked_icon(), name)
-            } else {
-                name
+            let track_name = match &item_id {
+                Some(PlayableId::Episode(id)) if app.liked_episode_ids_set.contains(id) => {
+                    format!("{}{name}", &app.user_config.padded_liked_icon())
+                }
+                Some(PlayableId::Track(id)) if app.liked_song_ids_set.contains(id) => {
+                    format!("{}{name}", &app.user_config.padded_liked_icon())
+                }
+                _ => name,
             };
 
             let play_bar_text = match track_item {
@@ -1034,9 +1078,9 @@ where
                 None => app.song_progress_ms,
             };
 
-            let perc = get_track_progress_percentage(progress_ms, duration_ms);
+            let perc = get_track_progress_percentage(progress_ms, duration_ms as u32);
 
-            let song_progress_label = display_track_progress(progress_ms, duration_ms);
+            let song_progress_label = display_track_progress(progress_ms, duration_ms as u32);
             let modifier = if app.user_config.behavior.enable_text_emphasis {
                 Modifier::ITALIC | Modifier::BOLD
             } else {
@@ -1185,6 +1229,7 @@ fn draw_artist_albums<B>(f: &mut Frame<B>, app: &App, layout_chunk: Rect)
 where
     B: Backend,
 {
+    eprintln!("HI1");
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(
@@ -1197,6 +1242,7 @@ where
         )
         .split(layout_chunk);
 
+    eprintln!("HI2");
     if let Some(artist) = &app.artist {
         let top_tracks = artist
             .top_tracks
@@ -1205,12 +1251,11 @@ where
                 let mut name = String::new();
                 if let Some(context) = &app.current_playback_context {
                     let track_id = match &context.item {
-                        Some(PlayableItem::Track(track)) => track.id.to_owned(),
-                        Some(PlayableItem::Episode(episode)) => Some(episode.id.to_owned()),
+                        Some(PlayableItem::Track(track)) => track.id.as_ref(),
                         _ => None,
                     };
 
-                    if track_id == top_track.id {
+                    if track_id == top_track.id.as_ref() {
                         name.push_str("▶ ");
                     }
                 };
@@ -1219,6 +1264,7 @@ where
             })
             .collect::<Vec<String>>();
 
+        eprintln!("HI3");
         draw_selectable_list(
             f,
             app,
@@ -1229,6 +1275,7 @@ where
             Some(artist.selected_top_track_index),
         );
 
+        eprintln!("HI4");
         let albums = &artist
             .albums
             .items
@@ -1250,6 +1297,7 @@ where
             })
             .collect::<Vec<String>>();
 
+        eprintln!("HI5");
         draw_selectable_list(
             f,
             app,
@@ -1260,6 +1308,7 @@ where
             Some(artist.selected_album_index),
         );
 
+        eprintln!("HI6");
         let related_artists = artist
             .related_artists
             .iter()
@@ -1273,6 +1322,7 @@ where
             })
             .collect::<Vec<String>>();
 
+        eprintln!("HI7");
         draw_selectable_list(
             f,
             app,
@@ -1282,7 +1332,9 @@ where
             get_artist_highlight_state(app, ArtistBlock::RelatedArtists),
             Some(artist.selected_related_artist_index),
         );
+        eprintln!("HI8");
     };
+    eprintln!("HI9");
 }
 
 pub fn draw_device_list<B>(f: &mut Frame<B>, app: &App)
@@ -1392,7 +1444,7 @@ where
             .items
             .iter()
             .map(|album_page| TableItem {
-                id: album_page.album.id.to_owned(),
+                id: album_page.album.id.to_string(),
                 format: vec![
                     format!(
                         "{}{}",
@@ -1463,7 +1515,7 @@ where
                 let (played_str, time_str) = match episode.resume_point {
                     Some(ResumePoint {
                         fully_played,
-                        resume_position_ms,
+                        resume_position,
                     }) => (
                         if fully_played {
                             " ✔".to_owned()
@@ -1472,17 +1524,17 @@ where
                         },
                         format!(
                             "{} / {}",
-                            millis_to_minutes(u128::from(resume_position_ms)),
-                            millis_to_minutes(u128::from(episode.duration_ms))
+                            millis_to_minutes(resume_position.num_milliseconds() as u128),
+                            millis_to_minutes(episode.duration.num_milliseconds() as u128)
                         ),
                     ),
                     None => (
                         "".to_owned(),
-                        millis_to_minutes(u128::from(episode.duration_ms)),
+                        millis_to_minutes(episode.duration.num_milliseconds() as u128),
                     ),
                 };
                 TableItem {
-                    id: episode.id.to_owned(),
+                    id: episode.id.to_string(),
                     format: vec![
                         played_str,
                         episode.release_date.to_owned(),
@@ -1546,7 +1598,7 @@ where
             .items
             .iter()
             .map(|playlist| TableItem {
-                id: playlist.id.to_owned(),
+                id: playlist.id.to_string(),
                 format: vec![playlist.name.to_owned()],
             })
             .collect::<Vec<TableItem>>();
@@ -1614,12 +1666,17 @@ where
             .items
             .iter()
             .map(|item| TableItem {
-                id: item.track.id.clone().unwrap_or_else(|| "".to_string()),
+                id: item
+                    .track
+                    .id
+                    .as_ref()
+                    .map(|x| x.to_string())
+                    .unwrap_or_else(|| "".to_string()),
                 format: vec![
                     "".to_string(),
                     item.track.name.to_owned(),
                     create_artist_string(&item.track.artists),
-                    millis_to_minutes(u128::from(item.track.duration_ms)),
+                    millis_to_minutes(item.track.duration.num_milliseconds() as u128),
                 ],
             })
             .collect::<Vec<TableItem>>();
@@ -1767,10 +1824,17 @@ fn draw_table<B>(
 
     let track_playing_index = app.current_playback_context.to_owned().and_then(|ctx| {
         ctx.item.and_then(|item| match item {
-            PlayableItem::Track(track) => items
+            PlayableItem::Track(track) => items.iter().position(|item| {
+                track
+                    .id
+                    .as_ref()
+                    .map(|id| id.to_string())
+                    .map(|id| id == item.id)
+                    .unwrap_or(false)
+            }),
+            PlayableItem::Episode(episode) => items
                 .iter()
-                .position(|item| track.id.to_owned().map(|id| id == item.id).unwrap_or(false)),
-            PlayableItem::Episode(episode) => items.iter().position(|item| episode.id == item.id),
+                .position(|item| episode.id.to_string() == item.id),
         })
     });
 

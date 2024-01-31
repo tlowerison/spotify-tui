@@ -20,14 +20,15 @@ backtrace = "0.3"
 chrono = "0.4"
 clap = "4.4"
 clap_complete = "4.4"
-crossterm = "0.27"
+crossterm = { version = "0.27", features = ["event-stream"] }
 derivative = "2.2"
 derive_more = "0.99"
 dirs = "5.0"
 futures-util = "0.3"
 paste = "1.0"
 rand = "0.8"
-rspotify = "0.12.0"
+rspotify = { version = "0.12.0", features = ["cli"] }
+spotify-tui-util = { version = "0.1.0", path = "util" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"

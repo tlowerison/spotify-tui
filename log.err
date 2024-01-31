@@ -1,0 +1,3 @@
+   Compiling spotify-tui v0.25.0 (/Users/tlowerison/code/spotify-tui)
+    Finished dev [unoptimized + debuginfo] target(s) in 2.85s
+     Running `target/debug/spt`

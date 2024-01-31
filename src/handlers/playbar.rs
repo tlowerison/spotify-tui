@@ -23,7 +23,7 @@ pub fn handler(key: Key, app: &mut App) {
                             app.dispatch(IoEvent::ToggleSaveTrack { track_id });
                         }
                     }
-                    PlayableItem::Episode(episode) => {
+                    PlayableItem::Episode(_) => {
                         app.handle_error(anyhow!("cannot save episodes right now"));
                     }
                 };
