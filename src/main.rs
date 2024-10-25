@@ -300,7 +300,7 @@ async fn start_ui(user_config: UserConfig, app: &Arc<RwLock<App>>) -> Result<()>
     let mut backend = CrosstermBackend::new(stdout);
 
     if user_config.behavior.set_window_title {
-        backend.execute(SetTitle("spt - Spotify TUI"))?;
+        backend.execute(SetTitle("Spotify"))?;
     }
 
     let mut terminal = Terminal::new(backend)?;
