@@ -534,6 +534,13 @@ impl App {
         self.api_error = e.to_string();
     }
 
+    pub fn is_playing(&self) -> bool {
+        let Some(CurrentPlaybackContext { is_playing, .. }) = &self.current_playback_context else {
+            return false;
+        };
+        *is_playing
+    }
+
     pub fn toggle_playback(&mut self) {
         if let Some(CurrentPlaybackContext {
             is_playing: true, ..
@@ -543,6 +550,24 @@ impl App {
         } else {
             // When no offset or uris are passed, spotify will resume current playback
             self.dispatch(IoEvent::ResumePlayback);
+        }
+    }
+
+    pub fn resume_playback(&mut self) {
+        if let Some(CurrentPlaybackContext {
+            is_playing: false, ..
+        }) = &self.current_playback_context
+        {
+            self.dispatch(IoEvent::ResumePlayback);
+        }
+    }
+
+    pub fn pause_playback(&mut self) {
+        if let Some(CurrentPlaybackContext {
+            is_playing: true, ..
+        }) = &self.current_playback_context
+        {
+            self.dispatch(IoEvent::PausePlayback);
         }
     }
 

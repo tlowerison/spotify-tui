@@ -272,7 +272,7 @@ impl<'a> CliApp<'a> {
             for d in &devices.devices {
                 if d.name == device {
                     let id = d.id.clone().ok_or_else(|| {
-                        anyhow!("failed to use device with name '{name}': no device id")
+                        anyhow!("failed to use device with name '{}': no device id", d.name)
                     })?;
                     device_id.push_str(&id);
                     break;

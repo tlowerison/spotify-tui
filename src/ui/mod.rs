@@ -1229,7 +1229,6 @@ fn draw_artist_albums<B>(f: &mut Frame<B>, app: &App, layout_chunk: Rect)
 where
     B: Backend,
 {
-    eprintln!("HI1");
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(
@@ -1242,7 +1241,6 @@ where
         )
         .split(layout_chunk);
 
-    eprintln!("HI2");
     if let Some(artist) = &app.artist {
         let top_tracks = artist
             .top_tracks
@@ -1264,7 +1262,6 @@ where
             })
             .collect::<Vec<String>>();
 
-        eprintln!("HI3");
         draw_selectable_list(
             f,
             app,
@@ -1275,7 +1272,6 @@ where
             Some(artist.selected_top_track_index),
         );
 
-        eprintln!("HI4");
         let albums = &artist
             .albums
             .items
@@ -1297,7 +1293,6 @@ where
             })
             .collect::<Vec<String>>();
 
-        eprintln!("HI5");
         draw_selectable_list(
             f,
             app,
@@ -1308,7 +1303,6 @@ where
             Some(artist.selected_album_index),
         );
 
-        eprintln!("HI6");
         let related_artists = artist
             .related_artists
             .iter()
@@ -1322,7 +1316,6 @@ where
             })
             .collect::<Vec<String>>();
 
-        eprintln!("HI7");
         draw_selectable_list(
             f,
             app,
@@ -1332,9 +1325,7 @@ where
             get_artist_highlight_state(app, ArtistBlock::RelatedArtists),
             Some(artist.selected_related_artist_index),
         );
-        eprintln!("HI8");
     };
-    eprintln!("HI9");
 }
 
 pub fn draw_device_list<B>(f: &mut Frame<B>, app: &App)

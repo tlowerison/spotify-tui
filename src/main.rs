@@ -30,19 +30,22 @@ use crossterm::{
 };
 use network::{IoEvent, Network};
 use rspotify::{clients::OAuthClient, AuthCodePkceSpotify, Config, Credentials, OAuth, Token};
-use std::{
-    cmp::{max, min},
-    io::{self, stdout},
-    panic::{self, PanicInfo},
-    path::PathBuf,
-    sync::Arc,
-};
+use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, PlatformConfig};
+use std::cmp::{max, min};
+use std::io::{self, stdout};
+use std::panic::{self, PanicHookInfo};
+use std::path::PathBuf;
+use std::sync::{mpsc::Receiver, Arc};
 use tokio::sync::RwLock;
 use tui::{
     backend::{Backend, CrosstermBackend},
     Terminal,
 };
 use user_config::{UserConfig, UserConfigPaths};
+use winit::application::ApplicationHandler;
+use winit::event::{DeviceEvent, DeviceId, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::window::{Window, WindowId};
 
 const SCOPES: [&str; 14] = [
     "playlist-read-collaborative",
@@ -86,7 +89,7 @@ fn close_application() -> Result<()> {
     Ok(())
 }
 
-fn panic_hook(info: &PanicInfo<'_>) {
+fn panic_hook(info: &PanicHookInfo<'_>) {
     if cfg!(debug_assertions) {
         let location = info.location().unwrap();
 
@@ -180,7 +183,7 @@ of the app. Beware that this comes at a CPU cost!",
             "elvish" => Shell::Elvish,
             _ => return Err(anyhow!("no completions avaible for '{}'", s)),
         };
-        clap_complete::generate_to(shell, &mut clap_app, "spt", "/dev/stdout")
+        clap_complete::generate_to(shell, &mut clap_app, "Spotify", "/dev/stdout")
             .expect("Unable to generate completions.");
         return Ok(());
     }
@@ -250,18 +253,26 @@ of the app. Beware that this comes at a CPU cost!",
     }
 
     // Launch the UI (async)
-    let ui_task = tokio::spawn({
+    let ui_task = tokio::task::spawn({
         let app = Arc::clone(&app);
         async move { start_ui(user_config, &app).await }
     });
 
-    let io_task = tokio::spawn({
+    // Launch the io event handler
+    let io_task = tokio::task::spawn({
         let app = Arc::clone(&app);
         async move {
             let mut network = Network::new(spotify, client_config, &app);
             handle_io_events(rx, &mut network).await;
         }
     });
+
+    // Launch the media playback controls and metadata handler
+    // let metadata_task = tokio::task::spawn_blocking({
+    // });
+
+    let app = Arc::clone(&app);
+    configure_metadata_and_controls(&app);
 
     tokio::select! {
         _ = io_task => {},
@@ -438,4 +449,138 @@ async fn start_ui(user_config: UserConfig, app: &Arc<RwLock<App>>) -> Result<()>
     close_application()?;
 
     Ok(())
+}
+
+fn configure_metadata_and_controls(app: &Arc<RwLock<App>>) {
+    let event_loop = EventLoop::new().unwrap();
+    let mut state = WindowState::new(app);
+    let _ = event_loop.run_app(&mut state);
+}
+
+struct WindowState {
+    app: Arc<RwLock<App>>,
+    controls: MediaControls,
+    rx: Receiver<MediaControlEvent>,
+    // Use an `Option` to allow the window to not be available until the
+    // application is properly running.
+    window: Option<Window>,
+}
+
+impl WindowState {
+    fn new(app: &Arc<RwLock<App>>) -> Self {
+        #[cfg(not(target_os = "windows"))]
+        let hwnd = None;
+
+        #[cfg(target_os = "windows")]
+        let hwnd = {
+            use raw_window_handle::windows::WindowsHandle;
+
+            let handle: WindowsHandle = unimplemented!();
+            Some(handle.hwnd)
+        };
+
+        let config = PlatformConfig {
+            dbus_name: "spotify-tui",
+            display_name: "Spotify",
+            hwnd,
+        };
+
+        let mut controls = MediaControls::new(config).unwrap();
+        let (tx, rx) = std::sync::mpsc::sync_channel(32);
+
+        controls.attach(move |e| tx.send(e).unwrap()).unwrap();
+
+        // Update the media metadata.
+        controls
+            .set_metadata(MediaMetadata {
+                title: Some("Souvlaki Space Station"),
+                artist: Some("Slowdive"),
+                album: Some("Souvlaki"),
+                ..Default::default()
+            })
+            .unwrap();
+
+        Self {
+            app: app.clone(),
+            controls,
+            rx,
+            window: Default::default(),
+        }
+    }
+}
+
+impl ApplicationHandler for WindowState {
+    // This is a common indicator that you can create a window.
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.window = Some(
+            event_loop
+                .create_window(Window::default_attributes())
+                .unwrap(),
+        );
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            _ => (),
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: DeviceId,
+        _event: DeviceEvent,
+    ) {
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        event_loop.set_control_flow(ControlFlow::Poll);
+
+        let app = self.app.clone();
+        let events = self.rx.try_iter();
+        let changed = futures::executor::block_on(async move {
+            let mut changed = false;
+            for event in events {
+                match event {
+                    MediaControlEvent::Toggle => app.write().await.toggle_playback(),
+                    MediaControlEvent::Play => app.write().await.resume_playback(),
+                    MediaControlEvent::Pause => app.write().await.pause_playback(),
+                    MediaControlEvent::Next => app.write().await.dispatch(IoEvent::NextTrack),
+                    MediaControlEvent::Previous => {
+                        app.write().await.dispatch(IoEvent::PreviousTrack)
+                    }
+                    MediaControlEvent::Stop => app.write().await.pause_playback(),
+                    _ => (),
+                }
+                changed = true;
+            }
+            changed
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let playback = futures::executor::block_on({
+            let app = self.app.clone();
+            async move {
+                if app.read().await.is_playing() {
+                    MediaPlayback::Playing { progress: None }
+                } else {
+                    MediaPlayback::Paused { progress: None }
+                }
+            }
+        });
+
+        if changed {
+            self.controls.set_playback(playback).unwrap();
+        }
+
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
 }
