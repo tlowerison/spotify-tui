@@ -1189,7 +1189,7 @@ where
         .border_style(get_color(highlight_state, app.user_config.theme));
     f.render_widget(welcome, layout_chunk);
 
-    let changelog = include_str!("../../CHANGELOG.md").to_string();
+    let changelog = "".to_string(); // include_str!("../../CHANGELOG.md").to_string();
 
     // If debug mode show the "Unreleased" header. Otherwise it is a release so there should be no
     // unreleased features
@@ -1203,11 +1203,7 @@ where
     let mut top_text = Text::from(BANNER);
     top_text.patch_style(Style::default().fg(app.user_config.theme.banner));
 
-    let bottom_text_raw = format!(
-    "{}{}",
-    "\nPlease report any bugs or missing features to https://github.com/Rigellute/spotify-tui\n\n",
-    clean_changelog
-  );
+    let bottom_text_raw = format!("{}{}", "", clean_changelog);
     let bottom_text = Text::from(bottom_text_raw.as_str());
 
     // Contains the banner

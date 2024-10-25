@@ -9,8 +9,8 @@ use rspotify::model::idtypes::*;
 use rspotify::model::{context::CurrentPlaybackContext, PlayableItem};
 use spotify_tui_util::ParseFromUri;
 
-pub struct CliApp<'a> {
-    pub net: Network<'a>,
+pub struct CliApp {
+    pub net: Network,
     pub config: UserConfig,
 }
 
@@ -35,8 +35,8 @@ macro_rules! handle_error {
 // I feel that async in a cli is not working
 // I just .await all processes and directly interact
 // by calling network.handle_network_event
-impl<'a> CliApp<'a> {
-    pub fn new(net: Network<'a>, config: UserConfig) -> Self {
+impl CliApp {
+    pub fn new(net: Network, config: UserConfig) -> Self {
         Self { net, config }
     }
 

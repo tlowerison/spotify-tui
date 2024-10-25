@@ -3,13 +3,11 @@ use anyhow::Error;
 use crossterm::event::{self, EventStream};
 use futures_util::{FutureExt, StreamExt};
 use std::time::Duration;
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::JoinHandle};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 /// Configuration for event handling.
 pub struct EventConfig {
-    /// The key that is used to exit the application.
-    pub exit_key: Key,
     /// The tick rate at which the application will sent an tick event.
     pub tick_rate: Duration,
 }
@@ -17,7 +15,6 @@ pub struct EventConfig {
 impl Default for EventConfig {
     fn default() -> EventConfig {
         EventConfig {
-            exit_key: Key::Ctrl('c'),
             tick_rate: Duration::from_millis(250),
         }
     }
@@ -42,7 +39,7 @@ pub struct Events {
 
 impl Events {
     /// Constructs an new instance of `Events` with the default config.
-    pub fn new(tick_rate: u64) -> Events {
+    pub fn new(tick_rate: u64) -> (Events, JoinHandle<()>) {
         Events::with_config(EventConfig {
             tick_rate: Duration::from_millis(tick_rate),
             ..Default::default()
@@ -50,11 +47,11 @@ impl Events {
     }
 
     /// Constructs an new instance of `Events` from given config.
-    pub fn with_config(config: EventConfig) -> Events {
+    pub fn with_config(config: EventConfig) -> (Events, JoinHandle<()>) {
         let (tx, rx) = mpsc::unbounded_channel();
 
         let event_tx = tx.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut reader = EventStream::new();
             loop {
                 let result = tokio::select! {
@@ -73,7 +70,7 @@ impl Events {
             }
         });
 
-        Events { rx, tx }
+        (Events { rx, tx }, handle)
     }
 
     /// Attempts to read an event.

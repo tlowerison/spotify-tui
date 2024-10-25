@@ -11,7 +11,7 @@ use clap::ArgMatches;
 pub async fn handle_matches(
     matches: &ArgMatches,
     cmd: String,
-    net: Network<'_>,
+    net: Network,
     config: UserConfig,
 ) -> Result<String> {
     let mut cli = CliApp::new(net, config);

@@ -307,6 +307,7 @@ pub struct App {
     pub selected_playlist_index: Option<usize>,
     pub active_playlist_index: Option<usize>,
     pub size: Rect,
+    #[allow(dead_code)]
     #[derivative(Default(value = "4"))]
     pub small_search_limit: u32,
     pub song_progress_ms: u128,

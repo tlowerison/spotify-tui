@@ -217,10 +217,10 @@ pub enum IoEvent<'a> {
 }
 
 #[derive(Clone)]
-pub struct Network<'a> {
+pub struct Network {
     pub spotify: AuthCodePkceSpotify,
     pub client_config: ClientConfig,
-    pub app: &'a Arc<RwLock<App>>,
+    pub app: Arc<RwLock<App>>,
     large_search_limit: u32,
     small_search_limit: u32,
 }
@@ -248,11 +248,11 @@ fn convert_result<'a, T: Deserialize<'a>>(input: &'a str) -> rspotify::ClientRes
     serde_json::from_str::<T>(input).map_err(Into::into)
 }
 
-impl<'a> Network<'a> {
+impl Network {
     pub fn new(
         spotify: AuthCodePkceSpotify,
         client_config: ClientConfig,
-        app: &'a Arc<RwLock<App>>,
+        app: Arc<RwLock<App>>,
     ) -> Self {
         Network {
             spotify,

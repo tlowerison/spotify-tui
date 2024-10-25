@@ -30,7 +30,7 @@ use crossterm::{
 };
 use network::{IoEvent, Network};
 use rspotify::{clients::OAuthClient, AuthCodePkceSpotify, Config, Credentials, OAuth, Token};
-use souvlaki::{MediaControlEvent, MediaControls, MediaMetadata, MediaPlayback, PlatformConfig};
+use souvlaki::{MediaControlEvent, MediaControls, MediaPlayback, PlatformConfig};
 use std::cmp::{max, min};
 use std::io::{self, stdout};
 use std::panic::{self, PanicHookInfo};
@@ -42,10 +42,10 @@ use tui::{
     Terminal,
 };
 use user_config::{UserConfig, UserConfigPaths};
-use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
+use winit::{application::ApplicationHandler, error::EventLoopError};
 
 const SCOPES: [&str; 14] = [
     "playlist-read-collaborative",
@@ -83,9 +83,9 @@ pub async fn get_token_auto(spotify: &mut AuthCodePkceSpotify) -> Option<Token> 
 }
 
 fn close_application() -> Result<()> {
-    disable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, LeaveAlternateScreen, DisableMouseCapture)?;
+    disable_raw_mode()?;
     Ok(())
 }
 
@@ -244,7 +244,7 @@ of the app. Beware that this comes at a CPU cost!",
     if let Some(cmd) = matches.subcommand_name() {
         // Save, because we checked if the subcommand is present at runtime
         let m = matches.subcommand_matches(cmd).unwrap();
-        let network = Network::new(spotify, client_config, &app);
+        let network = Network::new(spotify, client_config, app);
         println!(
             "{}",
             cli::handle_matches(m, cmd.to_string(), network, user_config).await?
@@ -252,46 +252,39 @@ of the app. Beware that this comes at a CPU cost!",
         return Ok(());
     }
 
+    // close main thread
+    let (main_tx, main_rx) = tokio::sync::mpsc::channel(1);
+
     // Launch the UI (async)
-    let ui_task = tokio::task::spawn({
-        let app = Arc::clone(&app);
-        async move { start_ui(user_config, &app).await }
-    });
+    let ui_app = app.clone();
+    tokio::task::spawn(start_ui(user_config, ui_app, main_tx.clone()));
 
     // Launch the io event handler
-    let io_task = tokio::task::spawn({
-        let app = Arc::clone(&app);
-        async move {
-            let mut network = Network::new(spotify, client_config, &app);
-            handle_io_events(rx, &mut network).await;
-        }
+    let io_app = app.clone();
+    tokio::task::spawn(async move {
+        let mut network = Network::new(spotify, client_config, io_app);
+        handle_io_events(rx, &mut network).await
     });
 
-    // Launch the media playback controls and metadata handler
-    // let metadata_task = tokio::task::spawn_blocking({
-    // });
-
-    let app = Arc::clone(&app);
-    configure_metadata_and_controls(&app);
-
-    tokio::select! {
-        _ = io_task => {},
-        _ = ui_task => {},
-    };
+    MetadataManager::start(app, main_rx)?;
 
     Ok(())
 }
 
-async fn handle_io_events<'a>(
+async fn handle_io_events(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<IoEvent<'static>>,
-    network: &mut Network<'a>,
+    network: &mut Network,
 ) {
     while let Some(io_event) = rx.recv().await {
         network.handle_network_event(io_event).await;
     }
 }
 
-async fn start_ui(user_config: UserConfig, app: &Arc<RwLock<App>>) -> Result<()> {
+async fn start_ui(
+    user_config: UserConfig,
+    app: Arc<RwLock<App>>,
+    main_tx: tokio::sync::mpsc::Sender<()>,
+) -> Result<()> {
     // Terminal initialization
     let mut stdout = stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -306,7 +299,8 @@ async fn start_ui(user_config: UserConfig, app: &Arc<RwLock<App>>) -> Result<()>
     let mut terminal = Terminal::new(backend)?;
     terminal.hide_cursor()?;
 
-    let mut events = event::Events::new(user_config.behavior.tick_rate_milliseconds);
+    let (mut events, events_handle) =
+        event::Events::new(user_config.behavior.tick_rate_milliseconds);
 
     // play music on, if not send them to the device selection view
 
@@ -445,29 +439,30 @@ async fn start_ui(user_config: UserConfig, app: &Arc<RwLock<App>>) -> Result<()>
         }
     }
 
+    events_handle.abort();
+
     terminal.show_cursor()?;
     close_application()?;
+    main_tx.send(()).await?;
 
     Ok(())
 }
 
-fn configure_metadata_and_controls(app: &Arc<RwLock<App>>) {
-    let event_loop = EventLoop::new().unwrap();
-    let mut state = WindowState::new(app);
-    let _ = event_loop.run_app(&mut state);
-}
-
-struct WindowState {
+struct MetadataManager {
     app: Arc<RwLock<App>>,
     controls: MediaControls,
+    main_rx: tokio::sync::mpsc::Receiver<()>,
     rx: Receiver<MediaControlEvent>,
     // Use an `Option` to allow the window to not be available until the
     // application is properly running.
     window: Option<Window>,
 }
 
-impl WindowState {
-    fn new(app: &Arc<RwLock<App>>) -> Self {
+impl MetadataManager {
+    fn start(
+        app: Arc<RwLock<App>>,
+        main_rx: tokio::sync::mpsc::Receiver<()>,
+    ) -> Result<(), EventLoopError> {
         #[cfg(not(target_os = "windows"))]
         let hwnd = None;
 
@@ -490,34 +485,25 @@ impl WindowState {
 
         controls.attach(move |e| tx.send(e).unwrap()).unwrap();
 
-        // Update the media metadata.
-        controls
-            .set_metadata(MediaMetadata {
-                title: Some("Souvlaki Space Station"),
-                artist: Some("Slowdive"),
-                album: Some("Souvlaki"),
-                ..Default::default()
-            })
-            .unwrap();
-
-        Self {
+        let mut this = Self {
             app: app.clone(),
             controls,
+            main_rx,
             rx,
             window: Default::default(),
-        }
+        };
+
+        let event_loop = EventLoop::new().unwrap();
+        event_loop.run_app(&mut this)?;
+
+        this.controls.detach().unwrap();
+
+        Ok(())
     }
 }
 
-impl ApplicationHandler for WindowState {
-    // This is a common indicator that you can create a window.
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        self.window = Some(
-            event_loop
-                .create_window(Window::default_attributes())
-                .unwrap(),
-        );
-    }
+impl ApplicationHandler for MetadataManager {
+    fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
 
     fn window_event(
         &mut self,
@@ -540,6 +526,10 @@ impl ApplicationHandler for WindowState {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.main_rx.try_recv().is_ok() {
+            return event_loop.exit();
+        }
+
         event_loop.set_control_flow(ControlFlow::Poll);
 
         let app = self.app.clone();
