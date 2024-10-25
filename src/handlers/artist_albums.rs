@@ -1,6 +1,6 @@
 use super::common_key_events;
 use crate::{
-    app::{App, TrackTableContext},
+    app::{App, ItemTableContext},
     event::Key,
 };
 
@@ -33,7 +33,7 @@ pub fn handler(key: Key, app: &mut App) {
                     .get(artist_albums.selected_index)
                     .cloned()
                 {
-                    app.track_table.context = Some(TrackTableContext::AlbumSearch);
+                    app.item_table.context = Some(ItemTableContext::AlbumSearch);
                     app.get_album_tracks(selected_album);
                 }
             };
@@ -49,7 +49,7 @@ mod tests {
 
     #[test]
     fn on_left_press() {
-        let mut app = App::new();
+        let mut app = App::default();
         app.set_current_route_state(
             Some(ActiveBlock::AlbumTracks),
             Some(ActiveBlock::AlbumTracks),
@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn on_esc() {
-        let mut app = App::new();
+        let mut app = App::default();
 
         handler(Key::Esc, &mut app);
 

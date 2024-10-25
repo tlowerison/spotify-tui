@@ -1,0 +1,18 @@
+[package]
+name = "spotify-tui-util"
+description = "Utilities fro spotify-tui."
+homepage = "https://github.com/tlowerison/spotify-tui"
+documentation = "https://github.com/tlowerison/spotify-tui"
+repository = "https://github.com/tlowerison/spotify-tui"
+keywords = ["spotify", "tui", "cli", "terminal"]
+categories = ["command-line-utilities"]
+version = "0.1.0"
+authors = ["Trey Lowerison"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+chrono = "0.4"
+paste = "1.0"
+rspotify-model = "0.13"
+spotify-tui-util-proc-macros = { version = "0.1.0", path = "proc-macros" }
